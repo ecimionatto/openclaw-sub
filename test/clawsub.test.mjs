@@ -266,3 +266,111 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
     "@openai/codex@latest",
   ]);
 });
+
+test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
+  const t1 = new Date("2026-11-25T16:00:00-05:00");
+  const config = {
+    chain: ["claude", "codex", "agy"],
+    workspace: tmpDir,
+    defaultCooldownMinutes: 60,
+    cooldownBufferMinutes: 5,
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const state = { providers: {} };
+  const batonStore = { sessions: {} };
+  const receivedPrompts = [];
+
+  // Turn 1: claude succeeds normally
+  const res1 = routePrompt("Design the authentication flow for our CLI", {
+    stateDir: tmpDir,
+    config,
+    state,
+    batonStore,
+    now: t1,
+    runner: ({ command, args, input }) => {
+      const actualPrompt = input || args[args.length - 1];
+      receivedPrompts.push({ provider: command, prompt: actualPrompt });
+      return {
+        exitCode: 0,
+        stdout: "We will use browser OAuth with zero API keys.",
+        stderr: "",
+        latencyMs: 100,
+      };
+    },
+  });
+  assert.equal(res1.ok, true);
+  assert.equal(res1.provider, "claude");
+  assert.equal(res1.handoffInjected, false);
+
+  // Turn 2: claude outputs partial work then runs out of credit ("usage_limit_reached: resets 6:50pm")
+  // -> codex takes over AND receives Turn 1 history + claude's mid-turn partial progress!
+  receivedPrompts.length = 0;
+  const res2 = routePrompt("Now implement step 2: cooldown state persistence", {
+    stateDir: tmpDir,
+    config,
+    state,
+    batonStore,
+    now: new Date(t1.getTime() + 60_000),
+    runner: ({ command, args, input }) => {
+      const actualPrompt = input || args[args.length - 1];
+      receivedPrompts.push({ provider: command, prompt: actualPrompt });
+      if (command === "claude") {
+        return {
+          exitCode: 1,
+          stdout: "Edited src/state.mjs (lines 1-40)...\n{\"type\":\"result\",\"error\":\"usage_limit_reached: resets 6:50pm\"}",
+          stderr: "",
+          latencyMs: 150,
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: "Finished step 2 in src/state.mjs and added unit tests.",
+        stderr: "",
+        latencyMs: 220,
+      };
+    },
+  });
+
+  assert.equal(res2.ok, true);
+  assert.equal(res2.provider, "codex");
+  assert.equal(res2.handoffInjected, true);
+  const codexReceived = receivedPrompts.find((p) => p.provider === "codex");
+  assert.ok(codexReceived);
+  assert.match(codexReceived.prompt, /CLAWSUB SHARED SESSION BATON — HANDOFF TO CODEX/);
+  assert.match(codexReceived.prompt, /We will use browser OAuth with zero API keys/);
+  assert.match(codexReceived.prompt, /Mid-Turn Credit Exhaustion Handoff from claude/);
+  assert.match(codexReceived.prompt, /Edited src\/state\.mjs/);
+
+  // Turn 3 (after 7:00pm when claude's 5h credit window resets):
+  // claude comes back online and receives Turn 2 completed by codex so claude has ZERO split-brain amnesia!
+  receivedPrompts.length = 0;
+  const afterReset = new Date("2026-11-25T19:05:00-05:00");
+  const res3 = routePrompt("Now add the CLI status command", {
+    stateDir: tmpDir,
+    config,
+    state,
+    batonStore,
+    now: afterReset,
+    runner: ({ command, args, input }) => {
+      const actualPrompt = input || args[args.length - 1];
+      receivedPrompts.push({ provider: command, prompt: actualPrompt });
+      return {
+        exitCode: 0,
+        stdout: "Added clawsub status building on codex's state.mjs work.",
+        stderr: "",
+        latencyMs: 140,
+      };
+    },
+  });
+
+  assert.equal(res3.ok, true);
+  assert.equal(res3.provider, "claude");
+  assert.equal(res3.handoffInjected, true);
+  const claudeRecoveryPrompt = receivedPrompts.find((p) => p.provider === "claude");
+  assert.ok(claudeRecoveryPrompt);
+  assert.match(claudeRecoveryPrompt.prompt, /CLAWSUB SHARED SESSION BATON — HANDOFF TO CLAUDE/);
+  assert.match(claudeRecoveryPrompt.prompt, /\[Turn #2 via codex\]/);
+  assert.match(claudeRecoveryPrompt.prompt, /Finished step 2 in src\/state\.mjs and added unit tests/);
+});

@@ -4,7 +4,7 @@ import path from "node:path";
 import { PROVIDERS, defaultCommandRunner, detectBinary } from "./providers.mjs";
 import { getDefaultStateDir } from "./state.mjs";
 
-export const CLAWSUB_VERSION = "0.2.0";
+export const CLAWSUB_VERSION = "0.3.0";
 
 /**
  * Known-good compatible version matrix and npm package names.

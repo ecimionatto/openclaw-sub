@@ -1,6 +1,6 @@
 {
   "name": "openclaw-sub",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude CLI, Codex CLI, Antigravity/Gemini CLI) instead of paying per-token API bills, with Ubuntu bootstrapper, version pinning, and agent skill.",
   "type": "module",
   "bin": {

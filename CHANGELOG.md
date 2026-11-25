@@ -3,6 +3,15 @@
 All notable changes to `openclaw-sub` (`clawsub`) are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-25
+
+### Added
+- **Cross-Model Shared Context & Session Pass-Down Baton (`src/baton.mjs` & `clawsub baton`):**
+  - Solves **split-brain session amnesia** across subscription CLIs (`claude`, `codex`, `agy`, `ollama`), each of which stores sessions in its own isolated native directory.
+  - **Mid-Turn Credit Exhaustion Handoff:** When a model runs out of credits mid-task, `clawsub` captures its partial stdout + uncommitted git worktree changes (`git status --short` + `git diff --stat`) and passes the baton down to the fallback CLI so execution resumes in-place without losing work.
+  - **Round-Trip Delta Catch-Up (A → B → A):** Tracks per-provider turn watermarks (`lastSeenTurnByProvider`). When Primary (`claude`) recovers after its 5-hour or weekly cooldown resets, it automatically receives the delta turns completed on Fallback (`codex` / `agy`) while it was offline.
+  - Added `clawsub baton [--session <key>] [--clear] [--json]` CLI command.
+
 ## [0.2.0] - 2026-11-25
 
 ### Added

@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import {
+  getSessionBaton,
+  loadBatonStore,
+  saveBatonStore,
+} from "../src/baton.mjs";
 import { generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
 import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
 import { routePrompt } from "../src/router.mjs";
@@ -29,9 +34,10 @@ Usage:
   clawsub install-skill [--workspace <path>]
   clawsub version [--json]
   clawsub status [--json]
+  clawsub baton [--session <key>] [--clear] [--json]
   clawsub doctor [--json]
-  clawsub run <prompt>
-  clawsub exec <provider> [--] <prompt>
+  clawsub run [--session <key>] <prompt>
+  clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
   clawsub reset [provider]
   clawsub help
@@ -400,6 +406,47 @@ function cmdReset(targetProvider) {
   }
 }
 
+function cmdBaton(flags) {
+  const stateDir = getDefaultStateDir();
+  const store = loadBatonStore(stateDir);
+  const sessionKey = typeof flags.session === "string" ? flags.session : "main";
+
+  if (flags.clear) {
+    delete store.sessions[sessionKey];
+    saveBatonStore(store, stateDir);
+    console.log(`✓ Cleared shared session baton for session '${sessionKey}'`);
+    return;
+  }
+
+  const session = getSessionBaton(store, sessionKey);
+  if (flags.json) {
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
+  console.log(`🦞 clawsub baton (session: ${sessionKey})\n`);
+  console.log(`Total Turns:         ${session.turnCounter}`);
+  console.log(`Last Active Model:   ${session.lastProvider || "(none)"}`);
+  console.log(
+    `Provider Watermarks: ${
+      Object.entries(session.lastSeenTurnByProvider)
+        .map(([k, v]) => `${k}=#${v}`)
+        .join(", ") || "(none)"
+    }`
+  );
+  if (session.pendingMidTurnHandoff) {
+    console.log(
+      `Pending Handoff:     ⚠ Mid-turn credit exhaustion from ${session.pendingMidTurnHandoff.failedProvider} at ${session.pendingMidTurnHandoff.failedAt}`
+    );
+  }
+  if (session.turns.length > 0) {
+    console.log("\nRecent Shared Turns:");
+    for (const t of session.turns.slice(-5)) {
+      console.log(`  • [#${t.turnId} via ${t.provider}] ${t.prompt.slice(0, 80)}`);
+    }
+  }
+}
+
 function main() {
   const { positional, flags } = parseFlags(process.argv.slice(2));
   if (flags.version && positional.length === 0) {
@@ -454,13 +501,19 @@ function main() {
     return;
   }
 
+  if (subcmd === "baton") {
+    cmdBaton(flags);
+    return;
+  }
+
   if (subcmd === "run") {
     const prompt = positional.slice(1).join(" ").trim() || readStdinIfPiped();
     if (!prompt) {
-      console.error("Usage: clawsub run <prompt>");
+      console.error("Usage: clawsub run [--session <key>] <prompt>");
       process.exit(1);
     }
-    const res = routePrompt(prompt);
+    const sessionKey = typeof flags.session === "string" ? flags.session : "main";
+    const res = routePrompt(prompt, { sessionKey });
     console.log(res.output);
     process.exit(res.ok ? 0 : 1);
   }
@@ -476,7 +529,8 @@ function main() {
       console.error(`Usage: clawsub exec ${providerId} <prompt>`);
       process.exit(1);
     }
-    const res = routePrompt(prompt, { onlyProvider: providerId });
+    const sessionKey = typeof flags.session === "string" ? flags.session : "main";
+    const res = routePrompt(prompt, { onlyProvider: providerId, sessionKey });
     console.log(res.output);
     process.exit(res.ok ? 0 : 1);
   }

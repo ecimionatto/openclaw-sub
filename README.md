@@ -3,7 +3,7 @@
 > **Install and run [OpenClaw](https://openclaw.ai) 24/7 on Ubuntu/macOS using the flat-rate AI subscriptions you already pay for (`claude`, `codex`, `agy` / `gemini`) — zero API keys, zero per-token bill, automatic 0ms quota failover, version pinning, and a built-in agent `SKILL.md`.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-purple.svg)](CHANGELOG.md)
+[![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-purple.svg)](CHANGELOG.md)
 [![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](package.json)
 
@@ -19,12 +19,13 @@ Meanwhile, most builders **already pay $20–$200/month** for flat-rate consumer
 - **Google AI / Free Tier** → Google Antigravity / Gemini CLI (`agy` / `gemini`)
 
 ### Why wiring CLIs by hand breaks in production
-If you just point a 24/7 agent at a subscription CLI out of the box, three things break:
+If you just point a 24/7 agent at a subscription CLI out of the box, four things break:
 1. **5-Hour & Weekly Rolling Caps:** When your primary subscription hits its 5-hour or weekly window (`usage_limit_reached: resets 6:50pm`), your bot either goes dead or wastes 30 seconds failing on the primary CLI on every single turn before falling back.
-2. **Headless TUI Permission Traps:** Subscription CLIs are built for interactive terminals. An unapproved file read or command prompt outside the workspace hangs a headless Telegram/Discord turn until it times out.
-3. **Overnight Heartbeat Drain:** Default 30-minute heartbeats silently chew through your 5-hour subscription allowance while you sleep, leaving you with zero quota for your 8:30 AM standup or live chat.
+2. **Split-Brain Session Amnesia on Failover & Recovery:** Each CLI (`claude`, `codex`, `agy`) stores sessions in its own isolated format (`~/.claude`, `~/.codex`, `~/.gemini/antigravity-cli`). When Model A runs out of credits mid-conversation or mid-PR and fails over to Model B, Model B has **zero memory** of what Model A just decided or edited — and when Model A's credits reset hours later, Model A doesn't know what Model B did while it was offline!
+3. **Headless TUI Permission Traps:** Subscription CLIs are built for interactive terminals. An unapproved file read or command prompt outside the workspace hangs a headless Telegram/Discord turn until it times out.
+4. **Overnight Heartbeat Drain:** Default 30-minute heartbeats silently chew through your 5-hour subscription allowance while you sleep, leaving you with zero quota for your 8:30 AM standup or live chat.
 
-**`openclaw-sub` (`clawsub`) fixes all three — and bootstraps OpenClaw on Ubuntu in one command.**
+**`openclaw-sub` (`clawsub`) fixes all four — with a built-in Cross-Model Session Pass-Down Baton (`src/baton.mjs`) — and bootstraps OpenClaw on Ubuntu in one command.**
 
 ---
 
