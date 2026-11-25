@@ -1,0 +1,225 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  computeCooldownUntil,
+  findActiveTimeWindow,
+  generateOpenClawIntegration,
+  getProviderCooldown,
+  isHeartbeatPrompt,
+  isQuotaError,
+  parseResetTime,
+  routePrompt,
+} from "../src/index.mjs";
+
+test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
+  assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
+  assert.equal(isQuotaError("You've hit your 5-hour limit. Resets at 10:00pm."), true);
+  assert.equal(isQuotaError("You've hit your weekly limit. Resets Nov 28, 10:00am."), true);
+  assert.equal(isQuotaError("Error: HTTP 429 Too Many Requests"), true);
+  assert.equal(isQuotaError("GoogleGenerativeAIError: ResourceExhausted: Quota exceeded"), true);
+  assert.equal(isQuotaError("Normal assistant response with 200 OK"), false);
+});
+
+test("parseResetTime parses same-day, next-day, multi-day date, and relative durations", () => {
+  const now = new Date("2026-11-25T16:00:00-05:00");
+
+  // 1. Same-day time in future ("resets 6:50pm")
+  const sameDay = parseResetTime("hit your 5-hour limit, resets 6:50pm", now);
+  assert.ok(sameDay);
+  assert.equal(sameDay.getHours(), 18);
+  assert.equal(sameDay.getMinutes(), 50);
+  assert.equal(sameDay.getDate(), 25);
+
+  // 2. Next-day roll when reset hour is earlier than current time ("resets 2am" seen at 4pm)
+  const nextDay = parseResetTime("usage_limit_reached: resets 2:15am", now);
+  assert.ok(nextDay);
+  assert.equal(nextDay.getHours(), 2);
+  assert.equal(nextDay.getMinutes(), 15);
+  assert.equal(nextDay.getDate(), 26);
+
+  // 3. Multi-day weekly limit ("resets Nov 28, 10:00am")
+  const multiDay = parseResetTime("You've hit your weekly limit. Resets Nov 28, 10:00am", now);
+  assert.ok(multiDay);
+  assert.equal(multiDay.getMonth(), 10); // November
+  assert.equal(multiDay.getDate(), 28);
+  assert.equal(multiDay.getHours(), 10);
+  assert.equal(multiDay.getMinutes(), 0);
+
+  // 4. Relative duration ("try again in 45 minutes")
+  const rel = parseResetTime("Rate limit reached, try again in 45 minutes", now);
+  assert.ok(rel);
+  assert.equal(rel.getTime() - now.getTime(), 45 * 60_000);
+});
+
+test("computeCooldownUntil adds safety buffer to parsed reset time or falls back to default", () => {
+  const now = new Date("2026-11-25T16:00:00-05:00");
+  const withReset = computeCooldownUntil("resets 6:50pm", { now, bufferMinutes: 5 });
+  assert.equal(withReset.getHours(), 18);
+  assert.equal(withReset.getMinutes(), 55);
+
+  const fallback = computeCooldownUntil("HTTP 429 rate_limit_error", {
+    now,
+    defaultMinutes: 60,
+  });
+  assert.equal(fallback.getTime() - now.getTime(), 60 * 60_000);
+});
+
+test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  const now = new Date("2026-11-25T16:00:00-05:00");
+  const config = {
+    chain: ["claude", "codex", "agy"],
+    workspace: tmpDir,
+    defaultCooldownMinutes: 60,
+    cooldownBufferMinutes: 5,
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const state = { providers: {} };
+
+  const calls = [];
+  const mockRunner = ({ command }) => {
+    calls.push(command);
+    if (command === "claude") {
+      return {
+        exitCode: 1,
+        stdout: '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
+        stderr: "",
+        latencyMs: 120,
+      };
+    }
+    if (command === "codex") {
+      return {
+        exitCode: 0,
+        stdout: "CODEX_FALLBACK_OK",
+        stderr: "",
+        latencyMs: 340,
+      };
+    }
+    return { exitCode: 0, stdout: "AGY_FALLBACK_OK", stderr: "", latencyMs: 250 };
+  };
+
+  // Turn 1: tries claude -> hits limit -> records cooldown -> succeeds on codex
+  const res1 = routePrompt("Hello world", {
+    stateDir: tmpDir,
+    config,
+    state,
+    now,
+    runner: mockRunner,
+  });
+
+  assert.equal(res1.ok, true);
+  assert.equal(res1.provider, "codex");
+  assert.equal(res1.output, "CODEX_FALLBACK_OK");
+  assert.deepEqual(calls, ["claude", "codex"]);
+  assert.equal( getProviderCooldown(state, "claude", now).coolingDown, true );
+
+  // Turn 2 (5 minutes later): 0ms fast-skip on claude -> goes straight to codex!
+  calls.length = 0;
+  const fiveMinLater = new Date(now.getTime() + 5 * 60_000);
+  const res2 = routePrompt("Second turn", {
+    stateDir: tmpDir,
+    config,
+    state,
+    now: fiveMinLater,
+    runner: mockRunner,
+  });
+
+  assert.equal(res2.ok, true);
+  assert.equal(res2.provider, "codex");
+  assert.deepEqual(calls, ["codex"]); // claude was never spawned!
+  assert.equal(res2.attempts[0].status, "skipped_cooldown");
+});
+
+test("routePrompt pauses heartbeats during quota reservation windows and when all CLIs are cooling down", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-hb-"));
+  const morningStandupWindow = new Date("2026-11-25T07:30:00-05:00");
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: tmpDir,
+    quietWindows: ["23:00-08:00"],
+    quotaReservationWindows: ["06:30-08:45"],
+  };
+  const state = { providers: {} };
+
+  const hbPrompt = "[OpenClaw heartbeat poll]\nIf nothing needs attention, reply NO_REPLY.";
+  assert.equal(isHeartbeatPrompt(hbPrompt), true);
+
+  let runnerCalled = false;
+  const resQuiet = routePrompt(hbPrompt, {
+    stateDir: tmpDir,
+    config,
+    state,
+    now: morningStandupWindow,
+    runner: () => {
+      runnerCalled = true;
+      return { exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 };
+    },
+  });
+
+  assert.equal(resQuiet.ok, true);
+  assert.equal(resQuiet.output, "NO_REPLY");
+  assert.equal(runnerCalled, false);
+
+  // Outside quiet window, when all providers are in cooldown:
+  // - Heartbeat returns NO_REPLY
+  // - Direct user message returns earliest reset notice
+  const afternoon = new Date("2026-11-25T15:00:00-05:00");
+  state.providers = {
+    claude: { status: "cooldown", cooldownUntil: new Date(afternoon.getTime() + 30 * 60_000).toISOString() },
+    codex: { status: "cooldown", cooldownUntil: new Date(afternoon.getTime() + 90 * 60_000).toISOString() },
+  };
+
+  const resHbCooldown = routePrompt(hbPrompt, {
+    stateDir: tmpDir,
+    config,
+    state,
+    now: afternoon,
+  });
+  assert.equal(resHbCooldown.ok, true);
+  assert.equal(resHbCooldown.output, "NO_REPLY");
+  assert.equal(resHbCooldown.allCoolingDown, true);
+
+  const resUserCooldown = routePrompt("Can you summarize today's commits?", {
+    stateDir: tmpDir,
+    config,
+    state,
+    now: afternoon,
+  });
+  assert.equal(resUserCooldown.ok, false);
+  assert.equal(resUserCooldown.allCoolingDown, true);
+  assert.match(resUserCooldown.output, /Earliest reset: claude/);
+});
+
+test("findActiveTimeWindow handles daytime and overnight windows", () => {
+  assert.equal(
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00-05:00")),
+    "23:00-08:00"
+  );
+  assert.equal(
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00-05:00")),
+    "23:00-08:00"
+  );
+  assert.equal(
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00-05:00")),
+    null
+  );
+});
+
+test("generateOpenClawIntegration writes executable router and provider shims", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-gen-"));
+  const out = generateOpenClawIntegration({
+    stateDir: tmpDir,
+    chain: ["claude", "codex", "agy"],
+    workspace: tmpDir,
+  });
+  assert.equal(fs.existsSync(out.profilePath), true);
+  assert.equal(fs.existsSync(out.routerWrapperPath), true);
+  assert.equal(fs.existsSync(out.providerShims.claude), true);
+  assert.equal(fs.existsSync(out.providerShims.codex), true);
+  assert.equal(fs.existsSync(out.providerShims.agy), true);
+});

@@ -1,0 +1,50 @@
+{
+  "name": "openclaw-sub",
+  "version": "0.1.0",
+  "description": "Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude CLI, Codex CLI, Antigravity/Gemini CLI) instead of paying per-token API bills, with automatic quota failover.",
+  "type": "module",
+  "bin": {
+    "clawsub": "./bin/clawsub.mjs",
+    "openclaw-sub": "./bin/clawsub.mjs"
+  },
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "status": "node ./bin/clawsub.mjs status",
+    "doctor": "node ./bin/clawsub.mjs doctor"
+  },
+  "keywords": [
+    "openclaw",
+    "claude-code",
+    "codex",
+    "antigravity",
+    "gemini-cli",
+    "ai-agent",
+    "telegram-bot",
+    "subscription",
+    "failover"
+  ],
+  "author": "Edson Cimionatto (@ecimionatto)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ecimionatto/openclaw-sub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ecimionatto/openclaw-sub/issues"
+  },
+  "homepage": "https://github.com/ecimionatto/openclaw-sub#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
