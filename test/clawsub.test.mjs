@@ -5,13 +5,18 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  CLAWSUB_VERSION,
   computeCooldownUntil,
   findActiveTimeWindow,
   generateOpenClawIntegration,
+  getInstalledVersions,
   getProviderCooldown,
+  installOpenClawUbuntu,
+  installSkill,
   isHeartbeatPrompt,
   isQuotaError,
   parseResetTime,
+  recordVersionSnapshot,
   routePrompt,
 } from "../src/index.mjs";
 
@@ -116,7 +121,7 @@ test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast
   assert.equal(res1.provider, "codex");
   assert.equal(res1.output, "CODEX_FALLBACK_OK");
   assert.deepEqual(calls, ["claude", "codex"]);
-  assert.equal( getProviderCooldown(state, "claude", now).coolingDown, true );
+  assert.equal(getProviderCooldown(state, "claude", now).coolingDown, true);
 
   // Turn 2 (5 minutes later): 0ms fast-skip on claude -> goes straight to codex!
   calls.length = 0;
@@ -170,8 +175,14 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
   // - Direct user message returns earliest reset notice
   const afternoon = new Date("2026-11-25T15:00:00-05:00");
   state.providers = {
-    claude: { status: "cooldown", cooldownUntil: new Date(afternoon.getTime() + 30 * 60_000).toISOString() },
-    codex: { status: "cooldown", cooldownUntil: new Date(afternoon.getTime() + 90 * 60_000).toISOString() },
+    claude: {
+      status: "cooldown",
+      cooldownUntil: new Date(afternoon.getTime() + 30 * 60_000).toISOString(),
+    },
+    codex: {
+      status: "cooldown",
+      cooldownUntil: new Date(afternoon.getTime() + 90 * 60_000).toISOString(),
+    },
   };
 
   const resHbCooldown = routePrompt(hbPrompt, {
@@ -222,4 +233,36 @@ test("generateOpenClawIntegration writes executable router and provider shims", 
   assert.equal(fs.existsSync(out.providerShims.claude), true);
   assert.equal(fs.existsSync(out.providerShims.codex), true);
   assert.equal(fs.existsSync(out.providerShims.agy), true);
+});
+
+test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-ver-"));
+
+  // 1. Version inspection & snapshot persistence
+  const versions = getInstalledVersions();
+  assert.equal(versions.clawsub, CLAWSUB_VERSION);
+  const snap = recordVersionSnapshot(tmpDir, "unit-test");
+  assert.equal(snap.label, "unit-test");
+  assert.equal(fs.existsSync(path.join(tmpDir, "clawsub-versions.json")), true);
+
+  // 2. Skill installation into workspace (`skills/clawsub/SKILL.md` + `.agents/skills/clawsub/SKILL.md`)
+  const sk = installSkill({ workspace: tmpDir });
+  assert.equal(sk.installedPaths.length, 2);
+  for (const p of sk.installedPaths) {
+    assert.equal(fs.existsSync(p), true);
+    assert.match(fs.readFileSync(p, "utf8"), /name:\s*clawsub/);
+  }
+
+  // 3. Ubuntu installer dry-run and mocked execution with version pinning
+  const dry = installOpenClawUbuntu({
+    openclawVersion: "2026.11.0",
+    providers: ["claude", "codex"],
+    dryRun: true,
+  });
+  assert.equal(dry.ok, true);
+  assert.deepEqual(dry.npmPackages, [
+    "openclaw@2026.11.0",
+    "@anthropic-ai/claude-code@latest",
+    "@openai/codex@latest",
+  ]);
 });

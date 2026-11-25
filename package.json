@@ -1,7 +1,7 @@
 {
   "name": "openclaw-sub",
-  "version": "0.1.0",
-  "description": "Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude CLI, Codex CLI, Antigravity/Gemini CLI) instead of paying per-token API bills, with automatic quota failover.",
+  "version": "0.2.0",
+  "description": "Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude CLI, Codex CLI, Antigravity/Gemini CLI) instead of paying per-token API bills, with Ubuntu bootstrapper, version pinning, and agent skill.",
   "type": "module",
   "bin": {
     "clawsub": "./bin/clawsub.mjs",
@@ -14,17 +14,23 @@
   "files": [
     "bin/",
     "src/",
+    "skills/",
+    "scripts/",
     "docs/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "status": "node ./bin/clawsub.mjs status",
-    "doctor": "node ./bin/clawsub.mjs doctor"
+    "doctor": "node ./bin/clawsub.mjs doctor",
+    "version-check": "node ./bin/clawsub.mjs version"
   },
   "keywords": [
     "openclaw",
+    "openclaw-skill",
+    "ubuntu",
     "claude-code",
     "codex",
     "antigravity",

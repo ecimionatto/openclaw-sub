@@ -11,13 +11,23 @@ import {
   saveConfig,
   saveState,
 } from "../src/state.mjs";
+import {
+  CLAWSUB_VERSION,
+  getInstalledVersions,
+  installOpenClawUbuntu,
+  installSkill,
+  recordVersionSnapshot,
+} from "../src/versions.mjs";
 
 function printHelp() {
-  console.log(`🦞 clawsub (openclaw-sub v0.1.0)
+  console.log(`🦞 clawsub (openclaw-sub v${CLAWSUB_VERSION})
 Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemini) with $0 API bills.
 
 Usage:
-  clawsub init [--chain claude,codex,agy] [--workspace <path>] [--probe]
+  clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
+  clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
+  clawsub install-skill [--workspace <path>]
+  clawsub version [--json]
   clawsub status [--json]
   clawsub doctor [--json]
   clawsub run <prompt>
@@ -27,10 +37,11 @@ Usage:
   clawsub help
 
 Examples:
-  npx openclaw-sub init --chain claude,codex,agy
+  curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/install-ubuntu.sh | bash
+  npx openclaw-sub init --chain claude,codex,agy --install-openclaw --install-skill --probe
+  clawsub version
   clawsub status
   clawsub doctor
-  clawsub test
 `);
 }
 
@@ -42,6 +53,10 @@ function parseFlags(argv) {
     if (arg === "--") {
       positional.push(...argv.slice(i + 1));
       break;
+    }
+    if (arg === "-v") {
+      flags.version = true;
+      continue;
     }
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
@@ -79,18 +94,34 @@ function cmdInit(flags) {
     : existing.chain || ["claude", "codex", "agy"];
 
   const workspace = flags.workspace || existing.workspace || process.cwd();
+  const openclawVersion = flags["openclaw-version"] || "latest";
 
-  console.log("🦞 clawsub — OpenClaw on Flat-Rate AI Subscriptions ($0 API Bill)\n");
+  console.log(`🦞 clawsub v${CLAWSUB_VERSION} — OpenClaw on Flat-Rate AI Subscriptions ($0 API Bill)\n`);
 
-  const oc = detectBinary("openclaw");
-  console.log("[1/4] Checking OpenClaw installation...");
-  if (oc.installed) {
+  let oc = detectBinary("openclaw");
+  console.log("[1/5] Checking OpenClaw installation...");
+  if (oc.installed && !flags["install-openclaw"]) {
     console.log(`  ✓ openclaw detected (${oc.version})`);
+  } else if (flags["install-openclaw"]) {
+    console.log(`  ⬇ Installing openclaw@${openclawVersion}...`);
+    recordVersionSnapshot(stateDir, "pre-install-openclaw");
+    const inst = installOpenClawUbuntu({
+      openclawVersion,
+      dryRun: Boolean(flags["dry-run"]),
+    });
+    if (inst.ok) {
+      oc = detectBinary("openclaw");
+      console.log(`  ✓ openclaw@${openclawVersion} installed (${oc.version || "ready"})`);
+    } else {
+      console.log(`  ✗ Failed to install openclaw@${openclawVersion}`);
+    }
   } else {
-    console.log("  ⚠ openclaw not found on PATH. Install via: npm install -g openclaw");
+    console.log(
+      "  ⚠ openclaw not found on PATH. Re-run with `--install-openclaw` or run `scripts/install-ubuntu.sh`."
+    );
   }
 
-  console.log("\n[2/4] Scanning Subscription CLIs...");
+  console.log("\n[2/5] Scanning Subscription CLIs...");
   const inspected = requestedChain.map((id) => inspectProvider(id));
   for (const p of inspected) {
     const binBadge = p.installed ? "✓" : "✗";
@@ -109,7 +140,7 @@ function cmdInit(flags) {
     );
   }
 
-  console.log("\n[3/4] Writing Subscription-Saver Config & Cooldown Shims...");
+  console.log("\n[3/5] Writing Subscription-Saver Config, Cooldown Shims & Version Snapshot...");
   const saved = saveConfig(
     {
       ...existing,
@@ -123,22 +154,102 @@ function cmdInit(flags) {
     chain: saved.chain,
     workspace: saved.workspace,
   });
+  const snap = recordVersionSnapshot(stateDir, "init");
 
-  console.log(`  ✓ Config saved:   ${stateDir}/clawsub.json`);
-  console.log(`  ✓ Profile saved:  ${integration.profilePath}`);
-  console.log(`  ✓ Router shim:    ${integration.routerWrapperPath}`);
+  console.log(`  ✓ Config saved:     ${stateDir}/clawsub.json`);
+  console.log(`  ✓ Profile saved:    ${integration.profilePath}`);
+  console.log(`  ✓ Version snapshot: ${stateDir}/clawsub-versions.json (clawsub v${snap.clawsub})`);
+  console.log(`  ✓ Router shim:      ${integration.routerWrapperPath}`);
   for (const [id, shimPath] of Object.entries(integration.providerShims)) {
-    console.log(`  ✓ Provider shim:  ${shimPath} (${id})`);
+    console.log(`  ✓ Provider shim:    ${shimPath} (${id})`);
+  }
+
+  console.log("\n[4/5] Agent Skill (SKILL.md)...");
+  if (flags["install-skill"] !== false) {
+    const sk = installSkill({ workspace });
+    for (const p of sk.installedPaths) {
+      console.log(`  ✓ Installed skill:  ${p}`);
+    }
+  } else {
+    console.log("  • Skipped skill install (run `clawsub install-skill` anytime)");
   }
 
   if (flags.probe) {
-    console.log("\n[4/4] Running Live Verification Probes...");
+    console.log("\n[5/5] Running Live Verification Probes...");
     cmdTest({ chain: requestedChain.join(",") });
   } else {
-    console.log("\n[4/4] Next Steps:");
+    console.log("\n[5/5] Next Steps:");
     console.log("  • Run `clawsub test` to verify DIRECT_OK / FALLBACK_OK across your CLIs.");
-    console.log("  • Run `clawsub status` anytime to inspect active cooldowns and reset times.");
+    console.log("  • Run `clawsub status` or `clawsub version` anytime.");
     console.log("  • Run `openclaw onboard` if you haven't connected Telegram/Discord/WhatsApp yet.");
+  }
+}
+
+function cmdInstallUbuntu(flags) {
+  const stateDir = getDefaultStateDir();
+  const openclawVersion = flags["openclaw-version"] || "latest";
+  const chain = flags.chain
+    ? String(flags.chain)
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    : ["claude", "codex", "agy"];
+  const dryRun = Boolean(flags["dry-run"]);
+
+  recordVersionSnapshot(stateDir, "pre-install-ubuntu");
+  const res = installOpenClawUbuntu({
+    openclawVersion,
+    providers: flags["with-clis"] ? chain : [],
+    dryRun,
+  });
+
+  if (dryRun) {
+    console.log("🦞 clawsub install-ubuntu (dry-run)\n");
+    for (const c of res.commands) {
+      console.log(`  $ ${c}`);
+    }
+    return;
+  }
+
+  if (!res.ok) {
+    console.error("✗ Ubuntu OpenClaw installation failed.");
+    process.exit(1);
+  }
+
+  recordVersionSnapshot(stateDir, "post-install-ubuntu");
+  console.log(`✓ Installed: ${res.npmPackages.join(", ")}`);
+}
+
+function cmdInstallSkill(flags) {
+  const stateDir = getDefaultStateDir();
+  const config = loadConfig(stateDir);
+  const workspace = flags.workspace || config.workspace || process.cwd();
+  const res = installSkill({ workspace });
+  console.log("🦞 Installed clawsub SKILL.md:");
+  for (const p of res.installedPaths) {
+    console.log(`  ✓ ${p}`);
+  }
+}
+
+function cmdVersion(flags) {
+  const versions = getInstalledVersions();
+  if (flags.json) {
+    console.log(JSON.stringify(versions, null, 2));
+    return;
+  }
+  console.log(`🦞 clawsub v${versions.clawsub} (${versions.platform}, node ${versions.node})\n`);
+  console.log(
+    `OpenClaw:  ${
+      versions.openclaw.installed ? `✓ ${versions.openclaw.version}` : "✗ not installed"
+    }`
+  );
+  console.log("Providers:");
+  for (const [id, info] of Object.entries(versions.providers)) {
+    console.log(
+      `  • ${id.padEnd(7)} (${info.binary}): ${
+        info.installed ? `✓ ${info.version}` : "✗ not installed"
+      }`
+    );
   }
 }
 
@@ -157,6 +268,7 @@ function cmdStatus(flags) {
       id,
       name: info.name,
       subscription: info.subscription,
+      version: info.version,
       installed: info.installed,
       authenticated: info.authenticated,
       status: cd.coolingDown
@@ -172,6 +284,7 @@ function cmdStatus(flags) {
     console.log(
       JSON.stringify(
         {
+          clawsubVersion: CLAWSUB_VERSION,
           chain: config.chain,
           workspace: config.workspace,
           lastActiveProvider: state.lastActiveProvider,
@@ -186,7 +299,7 @@ function cmdStatus(flags) {
     return;
   }
 
-  console.log("🦞 clawsub status\n");
+  console.log(`🦞 clawsub status (v${CLAWSUB_VERSION})\n`);
   console.log(`Chain:               ${(config.chain || []).join(" -> ")}`);
   console.log(`Workspace:           ${config.workspace}`);
   console.log(`Last Active CLI:     ${state.lastActiveProvider || "(none yet)"}`);
@@ -206,7 +319,7 @@ function cmdDoctor(flags) {
     process.exit(report.ok ? 0 : 1);
   }
 
-  console.log("🩺 clawsub doctor\n");
+  console.log(`🩺 clawsub doctor (v${CLAWSUB_VERSION})\n`);
   console.log(
     `OpenClaw: ${
       report.openclaw.installed ? `✓ ${report.openclaw.version}` : "✗ not found on PATH"
@@ -214,7 +327,7 @@ function cmdDoctor(flags) {
   );
   for (const p of report.providers) {
     console.log(
-      `Provider [${p.id}]: ${p.installed ? "✓ installed" : "✗ missing"} · ${
+      `Provider [${p.id}]: ${p.installed ? `✓ ${p.version}` : "✗ missing"} · ${
         p.authenticated ? "✓ authenticated" : "✗ not logged in"
       } · ${p.headlessSafe ? "✓ headless-safe" : "⚠ check headless settings"}`
     );
@@ -289,6 +402,11 @@ function cmdReset(targetProvider) {
 
 function main() {
   const { positional, flags } = parseFlags(process.argv.slice(2));
+  if (flags.version && positional.length === 0) {
+    console.log(CLAWSUB_VERSION);
+    return;
+  }
+
   const subcmd = positional[0] || "help";
 
   if (subcmd === "help" || flags.help) {
@@ -296,8 +414,23 @@ function main() {
     return;
   }
 
+  if (subcmd === "version") {
+    cmdVersion(flags);
+    return;
+  }
+
   if (subcmd === "init") {
     cmdInit(flags);
+    return;
+  }
+
+  if (subcmd === "install-ubuntu") {
+    cmdInstallUbuntu(flags);
+    return;
+  }
+
+  if (subcmd === "install-skill") {
+    cmdInstallSkill(flags);
     return;
   }
 
