@@ -198,7 +198,7 @@ test("eval metrics CLI missing --log exits 1", () => {
 });
 
 test("eval replay CLI --task --json outputs valid plan", () => {
-  const r = spawnSync("node", [BIN, "eval", "replay", "--task", "task-01", "--tasks-dir", TASKS_DIR, "--json"], { encoding: "utf8" });
+  const r = spawnSync("node", [BIN, "eval", "replay", "--task", "task-01", "--tasks-dir", TASKS_DIR, "--json", "--dry-run"], { encoding: "utf8" });
   assert.equal(r.status, 0, `stderr: ${r.stderr}`);
   const plan = JSON.parse(r.stdout);
   assert.equal(plan.taskId, "task-01");
@@ -223,4 +223,10 @@ test("metrics fixture file parses correctly", () => {
   assert.ok(m != null);
   assert.equal(m.taskCount, 4);
   assert.equal(m.firstPassApproveRate, 25);
+});
+
+test("eval replay CLI without --dry-run exits 1 with helpful message", () => {
+  const r = spawnSync("node", [BIN, "eval", "replay", "--task", "task-01", "--tasks-dir", TASKS_DIR, "--json"], { encoding: "utf8" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /dry-run/);
 });

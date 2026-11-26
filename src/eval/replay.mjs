@@ -6,6 +6,7 @@ const DEFAULT_TASKS_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../evals/tasks"
 );
+const PKG_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 const TASK_ID_RE = /^[\w-]+$/;
 
@@ -31,7 +32,8 @@ export function listTasks({ tasksDir = DEFAULT_TASKS_DIR } = {}) {
 export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
   const task = loadTask(taskId, { tasksDir });
   const testFile = task.acceptanceTest ?? null;
-  const testCmd = testFile ? `node --test ${testFile}` : null;
+  const absTestFile = testFile ? path.resolve(PKG_ROOT, testFile) : null;
+  const testCmd = absTestFile ? `node --test ${absTestFile}` : null;
   return {
     taskId: task.id,
     title: task.title,
@@ -41,8 +43,8 @@ export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
       {
         step: 3,
         action: "review",
-        detail: testFile
-          ? `Run hidden acceptance test: ${testFile}  (command: ${testCmd})`
+        detail: absTestFile
+          ? `Run hidden acceptance test: ${absTestFile}  (command: ${testCmd})`
           : "Run acceptance criteria checks (no hidden test defined)",
       },
       {
@@ -54,7 +56,7 @@ export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
       { step: 5, action: "report", detail: "Emit pass/fail per criterion and overall result" },
     ],
     dryRun: true,
-    ...(testFile ? { acceptanceTestFile: testFile, acceptanceTestCmd: testCmd } : {}),
+    ...(absTestFile ? { acceptanceTestFile: absTestFile, acceptanceTestCmd: testCmd } : {}),
   };
 }
 

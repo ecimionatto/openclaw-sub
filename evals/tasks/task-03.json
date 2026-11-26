@@ -1,12 +1,12 @@
 {
   "id": "task-03",
-  "title": "parseLog tolerates blank lines and comment lines",
-  "prompt": "Update src/eval/metrics.mjs parseLog() to silently skip blank lines and lines starting with '#' (comments). Add unit tests for both cases using inline fixture strings.",
+  "title": "eval metrics warns when --repo matches no events",
+  "prompt": "Update `clawsub eval metrics` so that when `--repo <name>` is passed but zero events in the log match that repo, it prints a warning to stderr: `warning: no events for repo <name>`. Currently it exits 0 with no output. The exit code must remain 0 (this is a warning, not an error). Add a unit test covering the warning path.",
   "acceptanceCriteria": [
-    "parseLog returns no event for a blank line",
-    "parseLog returns no event for a line starting with '#'",
-    "parseLog still returns correct events for valid lines interleaved with blanks and comments",
-    "unit test covers all three cases"
+    "clawsub eval metrics --repo <name> prints a warning to stderr when no events match",
+    "exit code is 0 (warning, not an error)",
+    "normal output is unaffected when --repo does match events",
+    "unit test covers the warning case"
   ],
   "acceptanceTest": "evals/tests/task-03.test.mjs"
 }

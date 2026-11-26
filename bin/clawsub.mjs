@@ -604,7 +604,11 @@ function main() {
     }
     if (evalSubcmd === "replay") {
       if (!flags.task) {
-        console.error("Usage: clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] [--dry-run]");
+        console.error("Usage: clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] --dry-run");
+        process.exit(1);
+      }
+      if (!flags["dry-run"]) {
+        console.error("error: live replay not implemented -- pass --dry-run to preview the plan");
         process.exit(1);
       }
       evalReplay({ taskId: flags.task, tasksDir: flags["tasks-dir"], json: flags.json });
