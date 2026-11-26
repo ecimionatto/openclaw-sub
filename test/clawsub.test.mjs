@@ -17,12 +17,14 @@ import {
   installSkill,
   isHeartbeatPrompt,
   isQuotaError,
+  loadState,
   parseResetTime,
   PROVIDER_PRICING,
   recordTurnSavings,
   recordVersionSnapshot,
   routePrompt,
   runDoctor,
+  saveState,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
@@ -710,13 +712,13 @@ test("computeSavings handles null/undefined input gracefully", () => {
 
 test("computeSavings computes correct savings for claude (Opus pricing)", () => {
   // 4000 promptChars = 1000 input tokens; 8000 responseChars = 2000 output tokens
-  // savings = (1000/1M)*15 + (2000/1M)*75 = 0.000015 + 0.00015 = 0.000165
+  // savings = (1000/1M)*15 + (2000/1M)*75 = 0.015 + 0.15 = 0.165
   const stats = {
     providers: { claude: { turnCount: 1, promptChars: 4000, responseChars: 8000 } },
     firstRecordedAt: "2026-11-01T00:00:00Z",
     lastRecordedAt: "2026-11-01T00:00:00Z",
   };
-  const result = computeSavings(stats);
+  const result = computeSavings(stats, { now: new Date("2026-11-01T00:00:00Z") });
   assert.equal(result.turnsTracked, 1);
   assert.equal(result.byProvider.length, 1);
   assert.equal(result.byProvider[0].provider, "claude");
@@ -731,9 +733,9 @@ test("computeSavings computes monthly projection from tracked days", () => {
   const stats = {
     providers: { codex: { turnCount: 10, promptChars: 40000, responseChars: 80000 } },
     firstRecordedAt: "2026-11-01T00:00:00Z",
-    lastRecordedAt: "2026-11-11T00:00:00Z", // 10 days
+    lastRecordedAt: "2026-11-11T00:00:00Z",
   };
-  const result = computeSavings(stats);
+  const result = computeSavings(stats, { now: new Date("2026-11-11T00:00:00Z") });
   assert.ok(result.daysTracked >= 9.9 && result.daysTracked <= 10.1, "daysTracked ~10");
   assert.ok(result.monthlyProjectionUsd > 0, "monthlyProjectionUsd should be positive");
   assert.ok(
@@ -751,7 +753,7 @@ test("computeSavings sums across multiple providers", () => {
     firstRecordedAt: "2026-11-01T00:00:00Z",
     lastRecordedAt: "2026-11-02T00:00:00Z",
   };
-  const result = computeSavings(stats);
+  const result = computeSavings(stats, { now: new Date("2026-11-02T00:00:00Z") });
   assert.equal(result.turnsTracked, 8);
   assert.equal(result.byProvider.length, 2);
   const claudeSaved = result.byProvider.find((p) => p.provider === "claude").savedUsd;
@@ -784,8 +786,10 @@ test("recordTurnSavings initializes savings on state without it", () => {
 });
 
 test("routePrompt records savings stats on successful turn", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-savings-route-"));
   const state = { providers: {} };
   routePrompt("hello world", {
+    stateDir: tmpDir,
     config: { chain: ["claude"], enableSessionBaton: false },
     state,
     batonStore: { sessions: {} },
@@ -796,4 +800,99 @@ test("routePrompt records savings stats on successful turn", () => {
   assert.equal(state.savings.providers.claude.turnCount, 1);
   assert.ok(state.savings.providers.claude.promptChars > 0);
   assert.ok(state.savings.providers.claude.responseChars > 0);
+  // Confirm the injected state was NOT persisted to the user's real default state directory
+  const defaultDir = path.join(os.homedir(), ".openclaw");
+  if (fs.existsSync(path.join(defaultDir, "clawsub-state.json"))) {
+    const persisted = JSON.parse(fs.readFileSync(path.join(defaultDir, "clawsub-state.json"), "utf8"));
+    assert.ok(
+      !persisted.savings || persisted.savings.providers?.claude?.turnCount !== 1 ||
+        persisted.savings.firstRecordedAt !== state.savings.firstRecordedAt,
+      "injected in-memory state must not leak to real default stateDir"
+    );
+  }
+});
+
+test("computeSavings projects conservatively when idle time follows the last turn", () => {
+  // 1 day of heavy use then 29 idle days — projection should be much less than 30x daily use
+  const firstRecordedAt = "2026-11-01T00:00:00Z";
+  const stats = {
+    providers: { claude: { turnCount: 100, promptChars: 400_000, responseChars: 800_000 } },
+    firstRecordedAt,
+    lastRecordedAt: "2026-11-01T12:00:00Z",
+  };
+  const now30DaysLater = new Date("2026-11-30T00:00:00Z");
+  const result = computeSavings(stats, { now: now30DaysLater });
+  assert.ok(result.daysTracked >= 28.9, "daysTracked should include idle days after last turn");
+  // The projection must be far less than 30x what a 1-day window would show
+  const inflatedResult = computeSavings(stats, { now: new Date("2026-11-01T12:00:00Z") });
+  assert.ok(
+    result.monthlyProjectionUsd < inflatedResult.monthlyProjectionUsd / 10,
+    "idle trailing days must deflate the monthly projection"
+  );
+});
+
+test("saveState/loadState round-trip preserves savings and handles legacy state with no savings field", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-state-rt-"));
+
+  // Round-trip with savings populated
+  const state = {
+    providers: {},
+    savings: {
+      providers: { claude: { turnCount: 7, promptChars: 28000, responseChars: 56000 } },
+      firstRecordedAt: "2026-11-01T00:00:00Z",
+      lastRecordedAt: "2026-11-05T00:00:00Z",
+    },
+  };
+  saveState(state, tmpDir);
+  const loaded = loadState(tmpDir);
+  assert.equal(loaded.savings.providers.claude.turnCount, 7);
+  assert.equal(loaded.savings.providers.claude.promptChars, 28000);
+  assert.equal(loaded.savings.firstRecordedAt, "2026-11-01T00:00:00Z");
+
+  // Legacy state file with no savings field must load with an empty savings object
+  const legacyPath = path.join(tmpDir, "clawsub-state.json");
+  fs.writeFileSync(legacyPath, JSON.stringify({ providers: {}, lastActiveProvider: "claude" }));
+  const legacy = loadState(tmpDir);
+  assert.ok(legacy.savings, "loadState must synthesize savings for legacy files");
+  assert.deepEqual(legacy.savings.providers, {});
+  assert.equal(legacy.savings.firstRecordedAt, null);
+});
+
+test("cmdSavings CLI command outputs savings for both empty and populated state dirs", () => {
+  const binPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+
+  // Empty state dir
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-sv-empty-"));
+  const emptyResult = spawnSync(
+    process.execPath,
+    [binPath, "savings", "--json"],
+    { env: { ...process.env, HOME: emptyDir }, encoding: "utf8" }
+  );
+  assert.equal(emptyResult.status, 0, `savings --json failed: ${emptyResult.stderr}`);
+  const emptyJson = JSON.parse(emptyResult.stdout);
+  assert.equal(emptyJson.turnsTracked, 0);
+  assert.equal(emptyJson.totalSavedUsd, 0);
+
+  // Populated state dir
+  const populatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-sv-pop-"));
+  const stateDirPath = path.join(populatedDir, ".openclaw");
+  fs.mkdirSync(stateDirPath, { recursive: true });
+  const popState = {
+    providers: {},
+    savings: {
+      providers: { codex: { turnCount: 5, promptChars: 20000, responseChars: 40000 } },
+      firstRecordedAt: "2026-11-01T00:00:00Z",
+      lastRecordedAt: "2026-11-05T00:00:00Z",
+    },
+  };
+  fs.writeFileSync(path.join(stateDirPath, "clawsub-state.json"), JSON.stringify(popState));
+  const popResult = spawnSync(
+    process.execPath,
+    [binPath, "savings", "--json"],
+    { env: { ...process.env, HOME: populatedDir }, encoding: "utf8" }
+  );
+  assert.equal(popResult.status, 0, `savings --json failed: ${popResult.stderr}`);
+  const popJson = JSON.parse(popResult.stdout);
+  assert.equal(popJson.turnsTracked, 5);
+  assert.ok(popJson.totalSavedUsd > 0, "totalSavedUsd should be positive for codex turns");
 });

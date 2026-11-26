@@ -1,6 +1,8 @@
-// API pricing per 1M tokens (input / output) — what the user would pay without clawsub
+// API pricing per 1M tokens (input / output) — what the user would pay without clawsub.
+// All `claude` turns use Opus pricing (conservative upper-bound; actual model may be cheaper).
+// Unknown provider IDs fall back to GPT/Codex pricing (may overestimate for cheaper models).
 export const PROVIDER_PRICING = {
-  claude:  { inputPerM: 15,   outputPerM: 75,  label: "Claude Opus API" },
+  claude:  { inputPerM: 15,   outputPerM: 75,  label: "Claude Opus API (est.)" },
   codex:   { inputPerM: 3,    outputPerM: 15,  label: "OpenAI GPT/Codex API" },
   agy:     { inputPerM: 1.25, outputPerM: 5,   label: "Gemini API" },
   gemini:  { inputPerM: 1.25, outputPerM: 5,   label: "Gemini API" },
@@ -11,10 +13,11 @@ const CHARS_PER_TOKEN = 4;
 
 /**
  * @param {{ providers: Record<string, { turnCount: number, promptChars: number, responseChars: number }>, firstRecordedAt: string | null, lastRecordedAt: string | null }} savingsStats
+ * @param {{ now?: Date }} [opts]
  * @returns {{ totalSavedUsd: number, byProvider: object[], dailyAvgUsd: number, monthlyProjectionUsd: number, daysTracked: number, turnsTracked: number }}
  */
-export function computeSavings(savingsStats) {
-  const { providers = {}, firstRecordedAt, lastRecordedAt } = savingsStats || {};
+export function computeSavings(savingsStats, { now = new Date() } = {}) {
+  const { providers = {}, firstRecordedAt } = savingsStats || {};
 
   let totalSavedUsd = 0;
   let turnsTracked = 0;
@@ -39,12 +42,11 @@ export function computeSavings(savingsStats) {
     });
   }
 
+  // Measure window from first recorded turn to now so idle time counts against projections.
   const first = firstRecordedAt ? new Date(firstRecordedAt) : null;
-  const last = lastRecordedAt ? new Date(lastRecordedAt) : null;
-  const daysTracked =
-    first && last && last > first
-      ? Math.max(1, (last.getTime() - first.getTime()) / 86_400_000)
-      : 1;
+  const daysTracked = first
+    ? Math.max(1, (now.getTime() - first.getTime()) / 86_400_000)
+    : 1;
 
   const dailyAvgUsd = totalSavedUsd / daysTracked;
   const monthlyProjectionUsd = dailyAvgUsd * 30;
