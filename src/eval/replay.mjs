@@ -32,7 +32,7 @@ export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
   const task = loadTask(taskId, { tasksDir });
   const testFile = task.acceptanceTest ?? null;
   const absTestFile = testFile ? path.resolve(tasksDir, testFile) : null;
-  const testCmd = absTestFile ? `node --test ${absTestFile}` : null;
+  const testCmd = absTestFile ? `node --test ${JSON.stringify(absTestFile)}` : null;
   return {
     taskId: task.id,
     title: task.title,

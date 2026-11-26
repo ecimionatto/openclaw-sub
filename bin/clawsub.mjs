@@ -42,8 +42,8 @@ Usage:
   clawsub baton [--session <key>] [--clear] [--json]
   clawsub doctor [--json]
   clawsub savings [--json]
-  clawsub eval metrics --log <file> [--repo <repo>] [--json]
-  clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] [--dry-run]
+  clawsub eval metrics --log <file> [--board <file>] [--repo <repo>] [--json]
+  clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] --dry-run
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
@@ -596,10 +596,10 @@ function main() {
     const evalSubcmd = positional[1];
     if (evalSubcmd === "metrics") {
       if (!flags.log) {
-        console.error("Usage: clawsub eval metrics --log <file> [--repo <repo>] [--json]");
+        console.error("Usage: clawsub eval metrics --log <file> [--board <file>] [--repo <repo>] [--json]");
         process.exit(1);
       }
-      evalMetrics({ logPath: flags.log, repo: flags.repo, json: flags.json });
+      evalMetrics({ logPath: flags.log, boardPath: flags.board, repo: flags.repo, json: flags.json });
       return;
     }
     if (evalSubcmd === "replay") {

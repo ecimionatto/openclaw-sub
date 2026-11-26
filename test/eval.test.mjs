@@ -1,3 +1,4 @@
+import { parseBoard } from "../src/eval/metrics.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -272,4 +273,43 @@ test("replayDryRun resolves acceptanceTest relative to tasksDir, not PKG_ROOT", 
   fs.writeFileSync(path.join(tmpDir, "tmp-01.json"), JSON.stringify(task));
   const plan = replayDryRun("tmp-01", { tasksDir: tmpDir });
   assert.equal(plan.acceptanceTestFile, testFile, "resolves relative to tasksDir");
+});
+
+test("parseLog and parseBoard parse real ops/loop work-tick.log lines + BACKLOG.md board", () => {
+  const logText = fs.readFileSync(path.join(FIXTURES, "real-work-tick.txt"), "utf8");
+  const boardText = fs.readFileSync(path.join(FIXTURES, "backlog-board.md"), "utf8");
+  const events = parseLog(logText);
+  const boardRows = parseBoard(boardText);
+
+  assert.equal(boardRows.length, 3);
+  assert.equal(boardRows[0].merged, true);
+  assert.equal(boardRows[2].rescoped, true);
+
+  const m = computeMetrics(events, { boardRows })["ecimionatto/openclaw-sub"];
+  assert.ok(m);
+  assert.equal(m.taskCount, 3);
+  assert.equal(m.firstPassApproveRate, 33.3);
+  assert.equal(m.fixRunsPerMergedPR, 0.5);
+  assert.equal(m.fixConvergenceRate, 50);
+  assert.equal(m.rescopeRate, 33.3);
+});
+
+test("eval metrics CLI human-readable text output and --board option work", () => {
+  const r = spawnSync(
+    "node",
+    [
+      BIN,
+      "eval",
+      "metrics",
+      "--log",
+      path.join(FIXTURES, "real-work-tick.txt"),
+      "--board",
+      path.join(FIXTURES, "backlog-board.md"),
+    ],
+    { encoding: "utf8" }
+  );
+  assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  assert.ok(r.stdout.includes("Repo: ecimionatto/openclaw-sub  (3 tasks)"));
+  assert.match(r.stdout, /First-pass APPROVE rate:\s+33\.3%/);
+  assert.match(r.stdout, /Fix runs per merged PR:\s+0\.5/);
 });
