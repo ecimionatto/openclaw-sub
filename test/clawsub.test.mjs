@@ -28,9 +28,8 @@ import {
   saveState,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
-import { fileURLToPath } from "node:url";
-import pluginEntry, { getPluginInfo, parseJSONL } from "../src/plugin.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
+import pluginEntry, { buildAgyCliBackend, parseAgyJsonlEvent, parseJSONL, resolveAgyCommand } from "../src/plugin.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -577,81 +576,6 @@ test("inspectOpenClawJson expands ~ paths before checking existence", () => {
   );
 });
 
-test("openclaw.plugin.json has required fields, valid entry path, and provides agy-cli", () => {
-  const manifestPath = fileURLToPath(new URL("../openclaw.plugin.json", import.meta.url));
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  assert.equal(typeof manifest.id, "string", "id must be a string");
-  assert.equal(typeof manifest.name, "string", "name must be a string");
-  assert.equal(typeof manifest.version, "string", "version must be a string");
-  assert.equal(typeof manifest.entry, "string", "entry must be a string");
-  assert.ok(Array.isArray(manifest.provides), "provides must be an array");
-  assert.ok(manifest.provides.includes("agy-cli"), "must provide agy-cli backend");
-  assert.ok(Array.isArray(manifest.cliBackends), "cliBackends must be an array");
-  assert.ok(manifest.cliBackends.includes("agy-cli"), "cliBackends must include agy-cli");
-  assert.equal(typeof manifest.configSchema, "object", "configSchema must be an object");
-  const entryPath = fileURLToPath(new URL(manifest.entry, new URL("../openclaw.plugin.json", import.meta.url)));
-  assert.equal(fs.existsSync(entryPath), true, "entry file must exist on disk");
-});
-
-test("openclaw.plugin.json version matches package.json version", () => {
-  const manifestPath = fileURLToPath(new URL("../openclaw.plugin.json", import.meta.url));
-  const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-  assert.equal(manifest.version, pkg.version, "plugin manifest version must match package.json version");
-});
-
-test("plugin default export register() calls api.registerCliBackend with id agy-cli and correct shape", () => {
-  let registered = null;
-  const fakeApi = {
-    registerCliBackend({ id, config }) {
-      registered = { id, config };
-    },
-  };
-  pluginEntry.register(fakeApi);
-  assert.ok(registered, "registerCliBackend must be called");
-  assert.equal(registered.id, "agy-cli", "must register with id agy-cli");
-  assert.equal(typeof registered.config.command, "string", "command must be a string");
-  assert.equal(typeof registered.config.buildArgs, "function", "buildArgs must be a function");
-  assert.equal(typeof registered.config.parseOutput, "function", "parseOutput must be a function");
-  const args = registered.config.buildArgs("hello world");
-  assert.ok(Array.isArray(args), "buildArgs must return an array");
-  assert.ok(args.includes("hello world"), "buildArgs must include the prompt");
-});
-
-test("parseJSONL parses JSONL CLI output: mixed JSON lines and plain text", () => {
-  const input = [
-    '{"type":"result","output":"Hello world"}',
-    "Some plain text line",
-    '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
-    "",
-    '{"type":"tool_use","name":"bash"}',
-  ].join("\n");
-
-  const lines = parseJSONL(input);
-  assert.equal(lines.length, 4);
-  assert.deepEqual(lines[0], { type: "result", output: "Hello world" });
-  assert.deepEqual(lines[1], { raw: "Some plain text line" });
-  assert.deepEqual(lines[2], { type: "result", error: "usage_limit_reached: resets 6:50pm" });
-  assert.deepEqual(lines[3], { type: "tool_use", name: "bash" });
-});
-
-test("parseJSONL is wired into the agy-cli backend parseOutput", () => {
-  const info = getPluginInfo();
-  const result = info.backend.parseOutput('{"type":"result","output":"ok"}\nplain text');
-  assert.deepEqual(result[0], { type: "result", output: "ok" });
-  assert.deepEqual(result[1], { raw: "plain text" });
-});
-
-test("getPluginInfo returns agy-cli backend with id and buildArgs", () => {
-  const info = getPluginInfo();
-  assert.equal(info.name, "openclaw-sub");
-  assert.ok(Array.isArray(info.provides));
-  assert.ok(info.provides.includes("agy-cli"));
-  assert.equal(info.backend.id, "agy-cli");
-  assert.equal(typeof info.backend.buildArgs, "function");
-});
-
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
   const t1 = new Date(2026, 10, 25, 16, 0);
@@ -1051,4 +975,89 @@ test("README.md links to docs/BENCHMARKS.md", () => {
   assert.ok(fs.existsSync(readmePath), "README.md must exist");
   const content = fs.readFileSync(readmePath, "utf8");
   assert.ok(content.includes("docs/BENCHMARKS.md"), "README.md must link to docs/BENCHMARKS.md");
+});
+
+test("root openclaw.plugin.json and package.json openclaw.extensions are valid and version-synced", () => {
+  const root = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+  const manifestPath = path.join(root, "openclaw.plugin.json");
+  assert.equal(fs.existsSync(manifestPath), true);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+
+  assert.equal(manifest.id, "openclaw-sub");
+  assert.equal(manifest.version, pkg.version);
+  assert.deepEqual(manifest.cliBackends, ["agy-cli"]);
+  assert.equal(manifest.configSchema?.type, "object");
+  assert.deepEqual(pkg.openclaw?.extensions, ["./src/plugin.mjs"]);
+  assert.ok(pkg.files.includes("openclaw.plugin.json"));
+});
+
+test("pluginEntry.register calls api.registerCliBackend with declarative CliBackendConfig and resolves alt binary", () => {
+  const registered = [];
+  const fakeApi = {
+    registerCliBackend(backend) {
+      registered.push(backend);
+    },
+  };
+
+  pluginEntry.register(fakeApi, {
+    findBinary: (bin) => (bin === "agy" ? { installed: true, path: "/usr/local/bin/agy" } : { installed: false }),
+  });
+
+  assert.equal(registered.length, 1);
+  const backend = registered[0];
+  assert.equal(backend.id, "agy-cli");
+  assert.equal(backend.modelProvider, "agy-cli");
+  assert.equal(typeof backend.parseJsonlEvent, "function");
+  assert.equal(backend.config.command, "/usr/local/bin/agy");
+  assert.equal(backend.config.output, "jsonl");
+  assert.equal(backend.config.input, "arg");
+  assert.equal(backend.config.modelArg, "--model");
+  assert.ok(backend.config.args.includes("--output-format"));
+  assert.ok(backend.config.args.includes("stream-json"));
+  assert.ok(backend.config.args.includes("{prompt}"));
+  assert.ok(backend.config.resumeArgs.includes("{sessionId}"));
+
+  // Fallback to altBinary ("gemini") when "agy" is not installed
+  const altCmd = resolveAgyCommand((bin) =>
+    bin === "gemini" ? { installed: true, path: "/opt/bin/gemini" } : { installed: false }
+  );
+  assert.equal(altCmd, "/opt/bin/gemini");
+});
+
+test("parseAgyJsonlEvent and parseJSONL parse init, step_update, result, and malformed lines", () => {
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "init", conversation_id: "conv-123" })),
+    { kind: "sessionId", sessionId: "conv-123" }
+  );
+  assert.deepEqual(
+    parseAgyJsonlEvent(
+      JSON.stringify({
+        event: "step_update",
+        step_update: { step_type: "agent_response", text_delta: "Hello" },
+      })
+    ),
+    [{ kind: "text", text: "Hello" }]
+  );
+  assert.deepEqual(
+    parseAgyJsonlEvent(
+      JSON.stringify({
+        event: "result",
+        result: { status: "SUCCESS", response: "Done", conversation_id: "conv-123", usage: { input_tokens: 10, output_tokens: 5 } },
+      })
+    ),
+    {
+      kind: "result",
+      text: "Done",
+      sessionId: "conv-123",
+      usage: { input: 10, output: 5 },
+    }
+  );
+  assert.equal(parseAgyJsonlEvent("not-json"), null);
+
+  const lines = parseJSONL(`{"a":1}\nmalformed\n{"b":2}`);
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines[0], { a: 1 });
+  assert.deepEqual(lines[1], { raw: "malformed" });
+  assert.deepEqual(lines[2], { b: 2 });
 });

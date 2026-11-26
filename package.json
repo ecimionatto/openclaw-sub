@@ -9,11 +9,7 @@
   },
   "main": "./src/index.mjs",
   "exports": {
-    ".": "./src/index.mjs",
-    "./plugin": "./src/plugin.mjs"
-  },
-  "openclaw": {
-    "extensions": ["./src/plugin.mjs"]
+    ".": "./src/index.mjs"
   },
   "files": [
     "bin/",
@@ -21,10 +17,10 @@
     "skills/",
     "scripts/",
     "docs/",
+    "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE",
-    "openclaw.plugin.json"
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
@@ -57,5 +53,10 @@
   "homepage": "https://github.com/ecimionatto/openclaw-sub#readme",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/plugin.mjs"
+    ]
   }
 }
