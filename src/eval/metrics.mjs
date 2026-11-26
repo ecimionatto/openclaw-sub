@@ -132,8 +132,19 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
       continue;
     }
 
-    // 6. "merged CS-14" or "CS-14 merged"
+    // 6. "merged CS-14", "CS-14 merged", "CS-14: merged"
     m = /^(?:🚀\s*)?merged\s+([A-Z]+-[A-Za-z0-9]+)\b(.*)$/.exec(line);
+    if (m) {
+      events.push({
+        ts: lastTickTs,
+        repo: repoFromTaskId(m[1], repoMap),
+        taskId: m[1],
+        event: ("merged" + (m[2] || "")).trim(),
+      });
+      continue;
+    }
+
+    m = /^([A-Z]+-[A-Za-z0-9]+):?\s+merged\b(.*)$/.exec(line);
     if (m) {
       events.push({
         ts: lastTickTs,
@@ -199,7 +210,7 @@ export function computeMetrics(events, { repo, boardRows = [] } = {}) {
       const reviews = evs.filter((e) => e.event.startsWith("reviewed ->"));
       const fixes = evs.filter((e) => /^fix(?: .+)? attempt \d+/.test(e.event));
       const hasApproval = reviews.some((e) => e.event.startsWith("reviewed -> APPROVE"));
-      const isMerged = Boolean(mergedEv) || Boolean(task.boardRow?.merged) || (boardRows.length === 0 && !mergedEv && false);
+      const isMerged = Boolean(mergedEv) || Boolean(task.boardRow?.merged);
       const hasRescope =
         evs.some((e) => e.event === "rescope" || e.event.startsWith("rescope ")) ||
         Boolean(task.boardRow?.rescoped);
@@ -209,7 +220,7 @@ export function computeMetrics(events, { repo, boardRows = [] } = {}) {
         if (reviews[0].event.startsWith("reviewed -> APPROVE")) firstPassApprove++;
       }
 
-      if (isMerged || ( !mergedEv && task.boardRow == null && hasApproval && !evs.some((e) => e.event.startsWith("merged")) && false )) {
+      if (isMerged) {
         mergedCount++;
         totalFixRuns += fixes.length;
         const hadFixReview = reviews.some((e) => e.event.startsWith("reviewed -> FIX"));
@@ -274,16 +285,15 @@ export function evalMetrics({ logPath, boardPath, repo, json } = {}) {
     process.exit(1);
   }
   const metrics = computeMetrics(events, { repo, boardRows });
+  const entries = Object.entries(metrics);
+  if (entries.length === 0 && repo) {
+    process.stderr.write(`warning: no events for repo ${repo}\n`);
+  }
   if (json) {
     console.log(JSON.stringify(metrics, null, 2));
   } else {
-    const entries = Object.entries(metrics);
     if (entries.length === 0) {
-      if (repo) {
-        process.stderr.write(`warning: no events for repo ${repo}\n`);
-      } else {
-        console.log("No events found.");
-      }
+      if (!repo) console.log("No events found.");
       return;
     }
     for (const [r, m] of entries) {

@@ -41,6 +41,42 @@ test("parseLog parses events correctly", () => {
   assert.ok(events[0].ts instanceof Date);
 });
 
+test("parseLog parses 'CS-14 merged' and 'CS-14: merged' variants", () => {
+  const text = [
+    "2026-11-26 11:00:00 tick: inflight=0 ready=1 events=0",
+    "CS-14 merged",
+    "CS-14: merged",
+    "merged CS-14",
+  ].join("\n");
+  const events = parseLog(text);
+  assert.equal(events.length, 3, `expected 3 merged events, got ${events.length}`);
+  assert.ok(events.every((e) => e.event === "merged"), `expected all events to be 'merged'`);
+  assert.ok(events.every((e) => e.taskId === "CS-14"), `expected all taskIds to be CS-14`);
+});
+
+test("computeMetrics: medianTimeToMergeMinutes from real-format merged lines", () => {
+  const text = [
+    "2026-11-26 10:00:00 tick: inflight=0 ready=1 events=0",
+    "spawned CS-10 pid=1",
+    "2026-11-26 11:00:00 tick: inflight=0 ready=1 events=0",
+    "CS-10 merged",
+    "2026-11-26 12:00:00 tick: inflight=0 ready=1 events=0",
+    "spawned CS-11 pid=2",
+    "2026-11-26 14:00:00 tick: inflight=0 ready=1 events=0",
+    "CS-11: merged",
+  ].join("\n");
+  const events = parseLog(text);
+  const m = computeMetrics(events)["ecimionatto/openclaw-sub"];
+  assert.equal(m.medianTimeToMergeMinutes, 90, `expected median 90 min, got ${m.medianTimeToMergeMinutes}`);
+});
+
+test("parseLog real-format fixture parses merged events", () => {
+  const text = fs.readFileSync(path.join(FIXTURES, "real-work-tick.txt"), "utf8");
+  const events = parseLog(text);
+  const mergedEvs = events.filter((e) => e.event === "merged" || e.event.startsWith("merged "));
+  assert.ok(mergedEvs.length >= 2, `expected >=2 merged events from fixture, got ${mergedEvs.length}`);
+});
+
 test("parseLog skips blank lines and unrecognized lines", () => {
   const text = `
 2026-11-26T10:00:00Z repo:a/b task:T-1 spawned

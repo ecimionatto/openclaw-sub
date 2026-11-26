@@ -1,12 +1,13 @@
 {
   "id": "task-03",
-  "title": "eval metrics warns when --repo matches no events",
-  "prompt": "Update `clawsub eval metrics` so that when `--repo <name>` is passed but zero events in the log match that repo, it prints a warning to stderr: `warning: no events for repo <name>`. Currently it exits 0 with no output. The exit code must remain 0 (this is a warning, not an error). Add a unit test covering the warning path.",
+  "title": "eval metrics --json emits --repo warning to stderr",
+  "prompt": "Update `clawsub eval metrics` so that when `--repo <name>` is passed together with `--json` but zero events in the log match that repo, the command still prints `warning: no events for repo <name>` to stderr. Currently the warning is emitted only in the non-JSON text branch, so `clawsub eval metrics --log X --repo nonexistent --json` exits 0 with `{}` on stdout and nothing on stderr. The warning must appear on stderr regardless of `--json`. The exit code must remain 0. The JSON stdout and text behaviour for matching repos must be unchanged.",
   "acceptanceCriteria": [
-    "clawsub eval metrics --repo <name> prints a warning to stderr when no events match",
-    "exit code is 0 (warning, not an error)",
-    "normal output is unaffected when --repo does match events",
-    "unit test covers the warning case"
+    "clawsub eval metrics --log X --repo nonexistent --json prints warning to stderr",
+    "stdout in that case is still valid JSON (empty object {})",
+    "exit code is 0",
+    "text mode (no --json) behaviour is unchanged — warning still emitted there too",
+    "unit test covers the --json warning path"
   ],
   "acceptanceTest": "../tests/task-03.test.mjs"
 }
