@@ -1,0 +1,10 @@
+{
+  "name": "@local/openclaw-agy-cli",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin: headless agy-cli (Antigravity/Gemini) runner with subscription-safe flags",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  }
+}

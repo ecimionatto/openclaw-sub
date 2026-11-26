@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   CLAWSUB_VERSION,
   computeCooldownUntil,
+  configureOpenClawJson,
   findActiveTimeWindow,
   generateOpenClawIntegration,
   getInstalledVersions,
@@ -265,6 +266,54 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
     "@anthropic-ai/claude-code@latest",
     "@openai/codex@latest",
   ]);
+});
+
+test("configureOpenClawJson creates openclaw.json on first run and merges/backs up on subsequent runs", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-oc-"));
+  const configPath = path.join(tmpDir, "openclaw.json");
+  const pluginDir = path.join(tmpDir, "plugins", "openclaw-agy-cli");
+
+  // First run: file doesn't exist — no backup, creates from scratch
+  const res1 = configureOpenClawJson({
+    openclawConfigPath: configPath,
+    chain: ["claude", "codex", "agy"],
+    workspace: tmpDir,
+    pluginDir,
+  });
+  assert.equal(fs.existsSync(configPath), true);
+  assert.equal(res1.backupPath, null);
+  const cfg1 = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(cfg1.agentRuntime.id, "claude-cli");
+  assert.equal(cfg1.agentRuntime.workspace, tmpDir);
+  assert.equal(cfg1.agents.defaults.model, "claude");
+  assert.deepEqual(cfg1.agents.defaults.models, ["claude", "codex", "agy"]);
+  assert.equal(cfg1.sessionCatalog.enabled, false);
+  assert.deepEqual(cfg1.plugins.load.paths, [pluginDir]);
+
+  // Second run: file exists — backup created, agy as primary, pluginDir not duplicated
+  const res2 = configureOpenClawJson({
+    openclawConfigPath: configPath,
+    chain: ["agy", "claude"],
+    workspace: tmpDir,
+    pluginDir,
+  });
+  assert.ok(res2.backupPath);
+  assert.equal(fs.existsSync(res2.backupPath), true);
+  const cfg2 = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(cfg2.agentRuntime.id, "agy-cli");
+  assert.equal(cfg2.agents.defaults.model, "agy");
+  assert.deepEqual(cfg2.agents.defaults.models, ["agy", "claude"]);
+  assert.equal(cfg2.sessionCatalog.enabled, false);
+  assert.equal(cfg2.plugins.load.paths.filter((p) => p === pluginDir).length, 1);
+
+  // codex maps to "codex" runtime id (not "codex-cli")
+  const res3 = configureOpenClawJson({
+    openclawConfigPath: configPath,
+    chain: ["codex"],
+    workspace: tmpDir,
+  });
+  const cfg3 = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(cfg3.agentRuntime.id, "codex");
 });
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {

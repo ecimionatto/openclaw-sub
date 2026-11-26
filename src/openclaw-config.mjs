@@ -1,7 +1,77 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PROVIDERS, detectBinary, inspectProvider } from "./providers.mjs";
 import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState } from "./state.mjs";
+
+const RUNTIME_ID_MAP = { claude: "claude-cli", codex: "codex", agy: "agy-cli" };
+
+/**
+ * Backs up and merges ~/.openclaw/openclaw.json with agentRuntime, agents.defaults,
+ * sessionCatalog.enabled=false, and plugin load paths for subscription-CLI mode.
+ *
+ * @param {{
+ *   openclawConfigPath?: string,
+ *   chain?: string[],
+ *   workspace?: string,
+ *   pluginDir?: string,
+ * }} [opts]
+ */
+export function configureOpenClawJson(opts = {}) {
+  const {
+    openclawConfigPath = path.join(os.homedir(), ".openclaw", "openclaw.json"),
+    chain = ["claude", "codex", "agy"],
+    workspace = process.cwd(),
+    pluginDir,
+  } = opts;
+
+  fs.mkdirSync(path.dirname(openclawConfigPath), { recursive: true });
+
+  let existing = {};
+  let backupPath = null;
+  if (fs.existsSync(openclawConfigPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(openclawConfigPath, "utf8"));
+    } catch {
+      existing = {};
+    }
+    backupPath = `${openclawConfigPath}.clawsub-${Date.now()}.bak`;
+    fs.copyFileSync(openclawConfigPath, backupPath);
+  }
+
+  const primaryRuntimeId = RUNTIME_ID_MAP[chain[0]] || chain[0];
+  const existingPlugins = existing.plugins || {};
+  const existingLoadPaths = (existingPlugins.load || {}).paths || [];
+  const loadPaths =
+    pluginDir && !existingLoadPaths.includes(pluginDir)
+      ? [...existingLoadPaths, pluginDir]
+      : existingLoadPaths;
+
+  const updated = {
+    ...existing,
+    agentRuntime: { ...(existing.agentRuntime || {}), id: primaryRuntimeId, workspace },
+    agents: {
+      ...(existing.agents || {}),
+      defaults: {
+        ...((existing.agents || {}).defaults || {}),
+        model: chain[0],
+        models: chain,
+      },
+    },
+    sessionCatalog: { ...(existing.sessionCatalog || {}), enabled: false },
+    ...(pluginDir || existingLoadPaths.length > 0
+      ? {
+          plugins: {
+            ...existingPlugins,
+            load: { ...(existingPlugins.load || {}), paths: loadPaths },
+          },
+        }
+      : {}),
+  };
+
+  fs.writeFileSync(openclawConfigPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
+  return { path: openclawConfigPath, backupPath, config: updated };
+}
 
 /**
  * Generates an OpenClaw-compatible CLI runner configuration and wrapper script
