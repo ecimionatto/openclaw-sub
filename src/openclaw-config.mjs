@@ -82,8 +82,9 @@ export function readOpenClawJson(homeDir) {
   const jsonPath = path.join(dir, ".openclaw", "openclaw.json");
   try {
     return JSON.parse(fs.readFileSync(jsonPath, "utf8"));
-  } catch {
-    return null;
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
   }
 }
 
@@ -100,23 +101,23 @@ export function inspectOpenClawJson(parsed) {
   const recommendations = [];
 
   for (const providerId of SESSION_CATALOG_PROVIDERS) {
-    const providerCfg = parsed?.providers?.[providerId];
-    if (providerCfg !== undefined && providerCfg?.sessionCatalog?.enabled !== false) {
+    const entryConfig = parsed?.plugins?.entries?.[providerId]?.config;
+    if (entryConfig === undefined || entryConfig?.sessionCatalog?.enabled !== false) {
+      const currentValue = entryConfig?.sessionCatalog?.enabled ?? "unset (defaults to enabled)";
       issues.push(
-        `openclaw.json: providers.${providerId}.sessionCatalog.enabled must be false for headless/cron use (currently: ${providerCfg?.sessionCatalog?.enabled ?? "unset"}).`
+        `openclaw.json: plugins.entries.${providerId}.config.sessionCatalog.enabled must be false for headless/cron use (currently: ${currentValue}).`
       );
       recommendations.push(
-        `Run: openclaw models auth login --provider ${providerId} --force  (then set sessionCatalog.enabled=false in ~/.openclaw/openclaw.json)`
+        `Set plugins.entries.${providerId}.config.sessionCatalog.enabled = false in ~/.openclaw/openclaw.json (to refresh expired auth: openclaw models auth login --provider ${providerId})`
       );
     }
   }
 
-  const plugins = Array.isArray(parsed?.plugins) ? parsed.plugins : [];
-  const agyCli = plugins.find((p) => p?.id === "agy-cli");
-  if (agyCli !== undefined) {
-    if (!agyCli.path || !fs.existsSync(agyCli.path)) {
+  const loadPaths = Array.isArray(parsed?.plugins?.load?.paths) ? parsed.plugins.load.paths : [];
+  for (const p of loadPaths) {
+    if (typeof p === "string" && !fs.existsSync(p)) {
       issues.push(
-        `openclaw.json: agy-cli plugin path does not exist: ${agyCli.path || "(empty)"}. Update plugins[agy-cli].path to the correct agy binary.`
+        `openclaw.json: plugins.load.paths entry does not exist: ${p}. Update plugins.load.paths to valid binary paths.`
       );
     }
   }
@@ -178,12 +179,18 @@ export function runDoctor(opts = {}) {
     }
   }
 
-  const parsedOcJson = readOpenClawJson(opts.homeDir);
   let openclawJson = null;
-  if (parsedOcJson !== null) {
-    openclawJson = inspectOpenClawJson(parsedOcJson);
-    issues.push(...openclawJson.issues);
-    recommendations.push(...openclawJson.recommendations);
+  try {
+    const parsedOcJson = readOpenClawJson(opts.homeDir);
+    if (parsedOcJson !== null) {
+      openclawJson = inspectOpenClawJson(parsedOcJson);
+      issues.push(...openclawJson.issues);
+      recommendations.push(...openclawJson.recommendations);
+    }
+  } catch (err) {
+    const readErr = `openclaw.json: could not read or parse: ${err.message}`;
+    issues.push(readErr);
+    openclawJson = { issues: [readErr], recommendations: [] };
   }
 
   return {

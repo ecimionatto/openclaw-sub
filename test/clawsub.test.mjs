@@ -276,11 +276,13 @@ test("runDoctor reports no openclaw.json issues when config is valid and headles
   fs.writeFileSync(agyCli, "#!/bin/sh\necho agy", { mode: 0o755 });
 
   const oc = {
-    providers: {
-      anthropic: { sessionCatalog: { enabled: false } },
-      codex: { sessionCatalog: { enabled: false } },
+    plugins: {
+      entries: {
+        anthropic: { config: { sessionCatalog: { enabled: false } } },
+        codex: { config: { sessionCatalog: { enabled: false } } },
+      },
+      load: { paths: [agyCli] },
     },
-    plugins: [{ id: "agy-cli", path: agyCli }],
   };
   fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
 
@@ -298,11 +300,13 @@ test("runDoctor detects misconfigured openclaw.json and emits exact remediation 
   fs.mkdirSync(openclawDir, { recursive: true });
 
   const oc = {
-    providers: {
-      anthropic: { sessionCatalog: { enabled: true } },
-      codex: { sessionCatalog: { enabled: true } },
+    plugins: {
+      entries: {
+        anthropic: { config: { sessionCatalog: { enabled: true } } },
+        codex: { config: { sessionCatalog: { enabled: true } } },
+      },
+      load: { paths: ["/nonexistent/path/to/agy"] },
     },
-    plugins: [{ id: "agy-cli", path: "/nonexistent/path/to/agy" }],
   };
   fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
 
@@ -318,19 +322,19 @@ test("runDoctor detects misconfigured openclaw.json and emits exact remediation 
   );
   assert.ok(
     report.openclawJson.recommendations.some((r) =>
-      /openclaw models auth login --provider anthropic --force/.test(r)
+      /plugins\.entries\.anthropic.*sessionCatalog/.test(r)
     ),
-    "Expected anthropic remediation command"
+    "Expected anthropic remediation command referencing correct JSON path"
   );
   assert.ok(
     report.openclawJson.recommendations.some((r) =>
-      /openclaw models auth login --provider codex --force/.test(r)
+      /plugins\.entries\.codex.*sessionCatalog/.test(r)
     ),
-    "Expected codex remediation command"
+    "Expected codex remediation command referencing correct JSON path"
   );
   assert.ok(
-    report.openclawJson.issues.some((i) => /agy-cli/.test(i) && /path/.test(i)),
-    "Expected agy-cli plugin path issue"
+    report.openclawJson.issues.some((i) => /plugins\.load\.paths/.test(i) && /does not exist/.test(i)),
+    "Expected missing plugins.load.paths issue"
   );
   assert.ok(
     report.issues.some((i) => /anthropic/.test(i)),
@@ -342,6 +346,37 @@ test("runDoctor skips openclaw.json checks gracefully when file is absent", () =
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-absent-"));
   const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
   assert.equal(report.openclawJson, null, "openclawJson should be null when file missing");
+});
+
+test("runDoctor reports an issue for malformed openclaw.json (not silently skipped)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-malformed-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), "{ invalid json !!!");
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.issues.some((i) => /openclaw\.json/.test(i) && /parse/.test(i)),
+    "Expected a parse error issue for malformed openclaw.json"
+  );
+  assert.notEqual(report.openclawJson, null, "openclawJson should not be null for malformed file");
+});
+
+test("runDoctor flags provider with omitted plugins.entries entry as sessionCatalog not explicitly disabled", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-omit-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify({ plugins: { entries: {} } }));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.openclawJson.issues.some((i) => /anthropic/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for omitted anthropic entry"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /codex/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for omitted codex entry"
+  );
 });
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
