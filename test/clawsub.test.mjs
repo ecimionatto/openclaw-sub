@@ -31,7 +31,7 @@ test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini R
 });
 
 test("parseResetTime parses same-day, next-day, multi-day date, and relative durations", () => {
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date("2026-11-25T16:00:00Z");
 
   // 1. Same-day time in future ("resets 6:50pm")
   const sameDay = parseResetTime("hit your 5-hour limit, resets 6:50pm", now);
@@ -143,7 +143,7 @@ test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast
 
 test("routePrompt pauses heartbeats during quota reservation windows and when all CLIs are cooling down", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-hb-"));
-  const morningStandupWindow = new Date("2026-11-25T07:30:00-05:00");
+  const morningStandupWindow = new Date("2026-11-25T07:30:00Z");
   const config = {
     chain: ["claude", "codex"],
     workspace: tmpDir,
@@ -209,15 +209,15 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
 
 test("findActiveTimeWindow handles daytime and overnight windows", () => {
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00")),
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00")),
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00")),
     null
   );
 });
