@@ -18,7 +18,9 @@ import {
   parseResetTime,
   recordVersionSnapshot,
   routePrompt,
+  runDoctor,
 } from "../src/index.mjs";
+import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -30,7 +32,7 @@ test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini R
 });
 
 test("parseResetTime parses same-day, next-day, multi-day date, and relative durations", () => {
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date(2026, 10, 25, 16, 0);
 
   // 1. Same-day time in future ("resets 6:50pm")
   const sameDay = parseResetTime("hit your 5-hour limit, resets 6:50pm", now);
@@ -61,7 +63,7 @@ test("parseResetTime parses same-day, next-day, multi-day date, and relative dur
 });
 
 test("computeCooldownUntil adds safety buffer to parsed reset time or falls back to default", () => {
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date(2026, 10, 25, 16, 0);
   const withReset = computeCooldownUntil("resets 6:50pm", { now, bufferMinutes: 5 });
   assert.equal(withReset.getHours(), 18);
   assert.equal(withReset.getMinutes(), 55);
@@ -75,7 +77,7 @@ test("computeCooldownUntil adds safety buffer to parsed reset time or falls back
 
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date(2026, 10, 25, 16, 0);
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -142,7 +144,7 @@ test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast
 
 test("routePrompt pauses heartbeats during quota reservation windows and when all CLIs are cooling down", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-hb-"));
-  const morningStandupWindow = new Date("2026-11-25T07:30:00-05:00");
+  const morningStandupWindow = new Date(2026, 10, 25, 7, 30);
   const config = {
     chain: ["claude", "codex"],
     workspace: tmpDir,
@@ -173,7 +175,7 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
   // Outside quiet window, when all providers are in cooldown:
   // - Heartbeat returns NO_REPLY
   // - Direct user message returns earliest reset notice
-  const afternoon = new Date("2026-11-25T15:00:00-05:00");
+  const afternoon = new Date(2026, 10, 25, 15, 0);
   state.providers = {
     claude: {
       status: "cooldown",
@@ -208,15 +210,15 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
 
 test("findActiveTimeWindow handles daytime and overnight windows", () => {
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date(2026, 10, 25, 23, 30)),
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date(2026, 10, 25, 6, 15)),
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date(2026, 10, 25, 14, 0)),
     null
   );
 });
@@ -267,9 +269,165 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
   ]);
 });
 
+test("runDoctor reports no openclaw.json issues when config is valid and headless-safe", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-valid-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  const agyCli = path.join(tmpDir, "agy-cli");
+  fs.writeFileSync(agyCli, "#!/bin/sh\necho agy", { mode: 0o755 });
+
+  const oc = {
+    plugins: {
+      entries: {
+        anthropic: { config: { sessionCatalog: { enabled: false } } },
+        codex: { config: { sessionCatalog: { enabled: false } } },
+      },
+      load: { paths: [agyCli] },
+    },
+  };
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.equal(
+    report.openclawJson.issues.length,
+    0,
+    `Expected no openclaw.json issues but got: ${report.openclawJson.issues.join("; ")}`
+  );
+});
+
+test("runDoctor detects misconfigured openclaw.json and emits exact remediation commands", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-bad-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+
+  const oc = {
+    plugins: {
+      entries: {
+        anthropic: { config: { sessionCatalog: { enabled: true } } },
+        codex: { config: { sessionCatalog: { enabled: true } } },
+      },
+      load: { paths: ["/nonexistent/path/to/agy"] },
+    },
+  };
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+
+  assert.ok(
+    report.openclawJson.issues.some((i) => /anthropic/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for anthropic"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /codex/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for codex"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) =>
+      /plugins\.entries\.anthropic.*sessionCatalog/.test(r)
+    ),
+    "Expected anthropic remediation command referencing correct JSON path"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) =>
+      /plugins\.entries\.codex.*sessionCatalog/.test(r)
+    ),
+    "Expected codex remediation command referencing correct JSON path"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /plugins\.load\.paths/.test(i) && /does not exist/.test(i)),
+    "Expected missing plugins.load.paths issue"
+  );
+  assert.ok(
+    report.issues.some((i) => /anthropic/.test(i)),
+    "Top-level issues should include openclaw.json issues"
+  );
+});
+
+test("runDoctor skips openclaw.json checks gracefully when file is absent", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-absent-"));
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.equal(report.openclawJson, null, "openclawJson should be null when file missing");
+});
+
+test("runDoctor reports an issue for malformed openclaw.json (not silently skipped)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-malformed-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), "{ invalid json !!!");
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.issues.some((i) => /openclaw\.json/.test(i) && /parse/.test(i)),
+    "Expected a parse error issue for malformed openclaw.json"
+  );
+  assert.notEqual(report.openclawJson, null, "openclawJson should not be null for malformed file");
+});
+
+test("runDoctor flags provider with omitted plugins.entries entry as sessionCatalog not explicitly disabled", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-omit-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify({ plugins: { entries: {} } }));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.openclawJson.issues.some((i) => /anthropic/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for omitted anthropic entry"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /codex/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for omitted codex entry"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) => r === "openclaw models auth login --provider anthropic --force"),
+    "Expected exact --force command for anthropic"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) => r === "openclaw models auth login --provider codex --force"),
+    "Expected exact --force command for codex"
+  );
+});
+
+test("inspectOpenClawJson reports missing agy-cli plugin path when absent from load.paths", () => {
+  const withoutAgy = { plugins: { load: { paths: ["/some/other/plugin"] } } };
+  const res1 = inspectOpenClawJson(withoutAgy);
+  assert.ok(
+    res1.issues.some((i) => /agy-cli/.test(i)),
+    "Expected agy-cli issue when no agy-cli entry in load.paths"
+  );
+
+  const withNoLoadPaths = { plugins: { entries: {} } };
+  const res2 = inspectOpenClawJson(withNoLoadPaths);
+  assert.ok(
+    res2.issues.some((i) => /agy-cli/.test(i)),
+    "Expected agy-cli issue when load.paths is absent entirely"
+  );
+
+  const withAgyCli = { plugins: { load: { paths: ["/usr/local/lib/agy-cli/entry.js"] } } };
+  const res3 = inspectOpenClawJson(withAgyCli);
+  assert.ok(
+    !res3.issues.some((i) => i === "openclaw.json: plugins.load.paths does not include an agy-cli plugin path."),
+    "No missing-agy-cli issue when load.paths includes an agy-cli entry (may still report missing-file)"
+  );
+});
+
+test("inspectOpenClawJson expands ~ paths before checking existence", () => {
+  const expandedDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
+  const expandedPlugin = path.join(expandedDir, ".local", "agy-cli", "plugin.js");
+  fs.mkdirSync(path.dirname(expandedPlugin), { recursive: true });
+  fs.writeFileSync(expandedPlugin, "");
+
+  const cfg = { plugins: { load: { paths: ["~/.local/agy-cli/plugin.js"] } } };
+  const res = inspectOpenClawJson(cfg, { homeDir: expandedDir });
+  assert.ok(
+    !res.issues.some((i) => /does not exist/.test(i) && i.includes("~/.local/agy-cli")),
+    "~ path that resolves to existing file should not be flagged as missing"
+  );
+});
+
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
-  const t1 = new Date("2026-11-25T16:00:00-05:00");
+  const t1 = new Date(2026, 10, 25, 16, 0);
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -346,7 +504,7 @@ test("shared session baton passes context across models on credit exhaustion AND
   // Turn 3 (after 7:00pm when claude's 5h credit window resets):
   // claude comes back online and receives Turn 2 completed by codex so claude has ZERO split-brain amnesia!
   receivedPrompts.length = 0;
-  const afterReset = new Date("2026-11-25T19:05:00-05:00");
+  const afterReset = new Date(2026, 10, 25, 19, 5);
   const res3 = routePrompt("Now add the CLI status command", {
     stateDir: tmpDir,
     config,

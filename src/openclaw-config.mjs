@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PROVIDERS, detectBinary, inspectProvider } from "./providers.mjs";
 import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState } from "./state.mjs";
@@ -72,6 +73,75 @@ exec npx --yes openclaw-sub exec ${providerId} -- "$@"
 }
 
 /**
+ * Reads and parses ~/.openclaw/openclaw.json. Returns null if absent or unreadable.
+ * @param {string} [homeDir]
+ * @returns {object|null}
+ */
+export function readOpenClawJson(homeDir) {
+  const dir = homeDir || os.homedir();
+  const jsonPath = path.join(dir, ".openclaw", "openclaw.json");
+  try {
+    return JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+const SESSION_CATALOG_PROVIDERS = ["anthropic", "codex"];
+
+/**
+ * Validates an openclaw.json object for headless-safe settings.
+ * Returns { issues, recommendations } arrays with human-readable strings.
+ * @param {object} parsed
+ * @returns {{ issues: string[], recommendations: string[] }}
+ */
+export function inspectOpenClawJson(parsed, opts = {}) {
+  const issues = [];
+  const recommendations = [];
+
+  for (const providerId of SESSION_CATALOG_PROVIDERS) {
+    const entryConfig = parsed?.plugins?.entries?.[providerId]?.config;
+    if (entryConfig === undefined || entryConfig?.sessionCatalog?.enabled !== false) {
+      const currentValue = entryConfig?.sessionCatalog?.enabled ?? "unset (defaults to enabled)";
+      issues.push(
+        `openclaw.json: plugins.entries.${providerId}.config.sessionCatalog.enabled must be false for headless/cron use (currently: ${currentValue}).`
+      );
+      recommendations.push(
+        `Set plugins.entries.${providerId}.config.sessionCatalog.enabled = false in ~/.openclaw/openclaw.json`
+      );
+      recommendations.push(
+        `openclaw models auth login --provider ${providerId} --force`
+      );
+    }
+  }
+
+  const homeDir = opts.homeDir || os.homedir();
+  const loadPaths = Array.isArray(parsed?.plugins?.load?.paths) ? parsed.plugins.load.paths : [];
+  for (const p of loadPaths) {
+    if (typeof p !== "string") continue;
+    const expanded = p.startsWith("~") ? path.join(homeDir, p.slice(1)) : p;
+    if (!fs.existsSync(expanded)) {
+      issues.push(
+        `openclaw.json: plugins.load.paths entry does not exist: ${p}. Update plugins.load.paths to valid plugin load paths.`
+      );
+    }
+  }
+
+  const hasAgyCli = loadPaths.some((p) => typeof p === "string" && p.includes("agy-cli"));
+  if (!hasAgyCli) {
+    issues.push(
+      "openclaw.json: plugins.load.paths does not include an agy-cli plugin path."
+    );
+    recommendations.push(
+      "Add the agy-cli plugin path to plugins.load.paths in ~/.openclaw/openclaw.json."
+    );
+  }
+
+  return { issues, recommendations };
+}
+
+/**
  * Runs a comprehensive health and readiness check (`clawsub doctor`).
  * @param {{ stateDir?: string, homeDir?: string, now?: Date }} [opts]
  */
@@ -125,6 +195,20 @@ export function runDoctor(opts = {}) {
     }
   }
 
+  let openclawJson = null;
+  try {
+    const parsedOcJson = readOpenClawJson(opts.homeDir);
+    if (parsedOcJson !== null) {
+      openclawJson = inspectOpenClawJson(parsedOcJson, { homeDir: opts.homeDir });
+      issues.push(...openclawJson.issues);
+      recommendations.push(...openclawJson.recommendations);
+    }
+  } catch (err) {
+    const readErr = `openclaw.json: could not read or parse: ${err.message}`;
+    issues.push(readErr);
+    openclawJson = { issues: [readErr], recommendations: [] };
+  }
+
   return {
     ok: issues.length === 0 && installedReady.length > 0,
     openclaw: openclawBin,
@@ -132,5 +216,6 @@ export function runDoctor(opts = {}) {
     providers,
     issues,
     recommendations,
+    openclawJson,
   };
 }
