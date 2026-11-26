@@ -598,7 +598,7 @@ test("openclaw.plugin.json version matches package.json version", () => {
 test("plugin default export register() calls api.registerCliBackend with id agy-cli and correct shape", () => {
   let registered = null;
   const fakeApi = {
-    registerCliBackend(id, config) {
+    registerCliBackend({ id, config }) {
       registered = { id, config };
     },
   };

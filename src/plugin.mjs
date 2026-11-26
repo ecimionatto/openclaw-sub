@@ -36,11 +36,13 @@ export function getPluginInfo() {
 
 export default {
   register(api) {
-    api.registerCliBackend("agy-cli", {
-      command: agyCLIBackend.command,
-      altCommand: agyCLIBackend.altCommand,
-      buildArgs: agyCLIBackend.buildArgs,
-      parseOutput: agyCLIBackend.parseOutput,
+    api.registerCliBackend({
+      id: agyCLIBackend.id,
+      config: {
+        command: agyCLIBackend.command,
+        buildArgs: agyCLIBackend.buildArgs,
+        parseOutput: agyCLIBackend.parseOutput,
+      },
     });
   },
 };
