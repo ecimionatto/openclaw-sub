@@ -14,7 +14,7 @@ You are a fix agent. A blind reviewer sent back PR #<<PR_NUMBER>> with the follo
 ## Instructions
 1. Check out the branch and read the diff since the review sha.
 2. Address only the issues listed in the FIX reason. Do not refactor unrelated code.
-3. Run all tests: `node --test test/*.test.mjs`
+3. Run `<<test command>>`; all tests must pass.
 4. Commit with message: `fix(<<TASK-ID>>): <<short fix description>>`
 5. Push the branch.
 6. Print `FIX_APPLIED sha=<new HEAD sha>` as the last line.

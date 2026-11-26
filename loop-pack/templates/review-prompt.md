@@ -12,7 +12,7 @@ You are a blind code reviewer. Review PR #<<PR_NUMBER>> on branch feat/<<TASK-ID
 
 ## Instructions
 1. Fetch the diff: `gh pr diff <<PR_NUMBER>>`
-2. Check: correctness, test coverage, adherence to repo constraints (zero external deps, no hardcoded paths, test-first).
+2. Check: correctness, test coverage, adherence to repo constraints: <<repo constraints>>.
 3. Output exactly ONE of the following verdicts as the **last line** of your response:
 
 ```

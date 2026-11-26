@@ -1037,7 +1037,8 @@ test("loopInit copies all loop-pack files into workspace/.clawsub-loop and retur
 
   assert.ok(Array.isArray(result.cronLines), "cronLines must be an array");
   assert.ok(result.cronLines.length >= 2, "at least 2 cron lines");
-  assert.ok(result.cronLines.some((l) => /clawsub loop/.test(l)), "cron lines mention clawsub loop");
+  assert.ok(result.cronLines.some((l) => l.includes(tmpDir)), "cron lines include resolved workspace path");
+  assert.ok(result.cronLines.some((l) => /AGENT_CMD/.test(l)), "cron lines include AGENT_CMD placeholder");
 });
 
 test("loopInit dry-run returns expected paths without writing files", () => {
@@ -1048,4 +1049,27 @@ test("loopInit dry-run returns expected paths without writing files", () => {
   assert.equal(result.copied.length, 6);
   assert.ok(!fs.existsSync(result.destDir), "dry-run must not create destDir");
   assert.ok(result.copied.every((p) => p.startsWith(result.destDir)), "all paths are under destDir");
+});
+
+test("loopInit skips existing files and an edited BACKLOG.md survives re-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-skip-"));
+  loopInit({ workspace: tmpDir });
+
+  const backlogPath = path.join(tmpDir, ".clawsub-loop", "templates", "BACKLOG.md");
+  const edited = "# My custom backlog\n| MY-1 | custom task | high | todo |\n";
+  fs.writeFileSync(backlogPath, edited, "utf8");
+
+  const result2 = loopInit({ workspace: tmpDir });
+  assert.equal(fs.readFileSync(backlogPath, "utf8"), edited, "edited BACKLOG.md must not be overwritten");
+  assert.ok(result2.skipped.some((p) => p.endsWith("BACKLOG.md")), "BACKLOG.md must appear in skipped");
+  assert.ok(result2.copied.length + result2.skipped.length === 6, "copied + skipped === total files");
+});
+
+test("loopInit resolves relative workspace to absolute and quotes paths in cron lines", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-abs-"));
+  const relPath = path.relative(process.cwd(), tmpDir);
+  const result = loopInit({ workspace: relPath, dryRun: true });
+
+  assert.ok(path.isAbsolute(result.destDir), "destDir must be absolute");
+  assert.ok(result.cronLines.some((l) => l.includes(`"${tmpDir}"`)), "cron lines must quote the absolute workspace path");
 });

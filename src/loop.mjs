@@ -13,9 +13,11 @@ const LOOP_FILES = [
   "templates/standup.md",
 ];
 
-export function loopInit({ workspace = process.cwd(), dryRun = false } = {}) {
-  const destDir = path.join(workspace, ".clawsub-loop");
+export function loopInit({ workspace = process.cwd(), dryRun = false, force = false } = {}) {
+  const resolvedWorkspace = path.resolve(workspace);
+  const destDir = path.join(resolvedWorkspace, ".clawsub-loop");
   const copied = [];
+  const skipped = [];
 
   if (!dryRun) {
     fs.mkdirSync(path.join(destDir, "templates"), { recursive: true });
@@ -25,17 +27,22 @@ export function loopInit({ workspace = process.cwd(), dryRun = false } = {}) {
     const src = path.join(LOOP_PACK_DIR, file);
     const dest = path.join(destDir, file);
     if (!dryRun) {
+      if (!force && fs.existsSync(dest)) {
+        skipped.push(dest);
+        continue;
+      }
       fs.copyFileSync(src, dest);
     }
     copied.push(dest);
   }
 
+  const quotedWorkspace = `"${resolvedWorkspace}"`;
   const cronLines = [
-    `# Worker tick — every 30 minutes`,
-    `*/30 * * * * cd ${workspace} && clawsub loop tick >> .clawsub-loop/worker.log 2>&1`,
-    `# Daily standup — 09:00 Mon-Fri`,
-    `0 9 * * 1-5 cd ${workspace} && clawsub loop standup >> .clawsub-loop/standup.log 2>&1`,
+    `# Worker tick — replace AGENT_CMD with your agent invocation (e.g. claude --print)`,
+    `# */30 * * * * cd ${quotedWorkspace} && AGENT_CMD "$(cat .clawsub-loop/templates/worker-prompt.md)" >> .clawsub-loop/worker.log 2>&1`,
+    `# Daily standup — append a row to standup.md at 09:00 Mon-Fri`,
+    `# 0 9 * * 1-5 cd ${quotedWorkspace} && echo "| $(date +%F) | TASK | PR | verdict | notes |" >> .clawsub-loop/templates/standup.md`,
   ];
 
-  return { destDir, copied, cronLines, dryRun };
+  return { destDir, copied, skipped, cronLines, dryRun };
 }

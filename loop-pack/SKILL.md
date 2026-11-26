@@ -22,13 +22,15 @@ Once the worker's PR is open, launch a **separate** agent session (no shared con
 - `BLOCK <reason> sha=<commit-sha>` — closes PR, returns task to backlog
 
 ### 4. Capped Fixes
-On `FIX`, launch one fix agent using `templates/fix-prompt.md`. The fix agent gets a **hard turn cap** (default: 15 tool calls). If not resolved within cap, escalate to `BLOCK`.
+On `FIX`, launch one fix agent using `templates/fix-prompt.md`. The fix agent gets a **hard turn cap** (default: 15 tool calls). If not resolved within cap, the fix agent outputs `FIX_EXHAUSTED` and the caller escalates to `BLOCK`.
+
+After the fix agent outputs `FIX_APPLIED sha=<new-sha>`, send the **new sha** back to **Blind Review** (step 3) with a fresh agent. Allow at most **2 fix rounds** per task; if a third review still returns `FIX`, escalate to `BLOCK` without another fix attempt.
 
 ### 5. Merge Gate
-On `APPROVE sha=<sha>`, verify the branch HEAD matches the sha before merging:
+On `APPROVE sha=<sha>`, mark the PR ready, verify the branch HEAD matches the sha, then merge:
 ```
-git rev-parse HEAD  # must equal sha from review
-gh pr merge --squash --delete-branch <PR>
+gh pr ready <PR>
+gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>
 ```
 
 ### 6. Standup
@@ -38,10 +40,10 @@ After each merge (or at cadence), append a row to `templates/standup.md` and opt
 
 Initialise a workspace:
 ```
-clawsub loop init [--workspace <path>] [--dry-run]
+clawsub loop init [--workspace <path>] [--dry-run] [--force]
 ```
 
-Suggested cron lines are printed after init. Add them to your crontab with `crontab -e`.
+Suggested cron comment lines are printed after init. Fill in `AGENT_CMD` and uncomment to activate. Add them to your crontab with `crontab -e`.
 
 ## Conventions
 - One task per worktree — never share mutable state between workers.
