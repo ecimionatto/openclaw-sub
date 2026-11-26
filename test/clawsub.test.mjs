@@ -1052,3 +1052,95 @@ test("syncNativeTranscripts sorts by timestamp and bounds initial backfill", () 
   assert.equal(prompts[1], "Q4");
   assert.equal(prompts[2], "Q5");
 });
+
+test("transcript-harvester: native nested message.stop_reason triggers in-flight holdback", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-nested-sr-"));
+  const claudeDir = path.join(tmpDir, "sess");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const filePath = path.join(claudeDir, "s.jsonl");
+
+  // Native Claude shape: stop_reason nested under message — null means in-flight
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "Native question" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Native partial", stop_reason: null } }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs1, watermarks: wm1 } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs1.length, 0, "nested message.stop_reason:null must trigger in-flight holdback");
+
+  // Append a completed assistant with stop_reason:end_turn nested under message
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "Native question" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Native partial", stop_reason: null } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Native final", stop_reason: "end_turn" } }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs2 } = harvestProvider("claude", claudeDir, wm1);
+  assert.equal(pairs2.length, 1, "completed native pair must be emitted after terminal stop_reason");
+  assert.ok(pairs2[0].response.includes("Native partial"));
+  assert.ok(pairs2[0].response.includes("Native final"));
+});
+
+test("transcript-harvester: tool_use stop_reason is non-terminal, held back; two-sync tool-loop emits one complete pair", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-toolloop-"));
+  const claudeDir = path.join(tmpDir, "sess");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const filePath = path.join(claudeDir, "s.jsonl");
+
+  // Sync 1: user asks, assistant replies with mixed text+tool_use and stop_reason:'tool_use' (non-terminal)
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "What is 2+2?" }),
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Let me calculate." }, { type: "tool_use", id: "t1", name: "calc", input: {} }], stop_reason: "tool_use" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs1, watermarks: wm2 } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs1.length, 0, "stop_reason:tool_use is non-terminal and must be held back");
+
+  // Sync 2: tool_result + final assistant answer appended
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "What is 2+2?" }),
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Let me calculate." }, { type: "tool_use", id: "t1", name: "calc", input: {} }], stop_reason: "tool_use" }),
+      JSON.stringify({ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "4" }] }),
+      JSON.stringify({ role: "assistant", content: "The answer is 4.", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs2 } = harvestProvider("claude", claudeDir, wm2);
+  assert.equal(pairs2.length, 1, "completed tool loop should emit one pair");
+  assert.equal(pairs2[0].prompt, "What is 2+2?");
+  assert.ok(pairs2[0].response.includes("Let me calculate."), "text from mixed tool_use turn must be preserved");
+  assert.ok(pairs2[0].response.includes("The answer is 4."), "final answer must be included");
+});
+
+test("transcript-harvester: unreadable subdirectory does not abort the whole sync", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-unreadable-"));
+  const readableDir = path.join(tmpDir, "readable");
+  const unreadableDir = path.join(tmpDir, "unreadable");
+  fs.mkdirSync(readableDir, { recursive: true });
+  fs.mkdirSync(unreadableDir, { recursive: true });
+
+  fs.writeFileSync(path.join(readableDir, "s.jsonl"),
+    JSON.stringify({ role: "user", content: "Good question" }) + "\n" +
+    JSON.stringify({ role: "assistant", content: "Good answer", stop_reason: "end_turn" }) + "\n"
+  );
+  fs.writeFileSync(path.join(unreadableDir, "s.jsonl"),
+    JSON.stringify({ role: "user", content: "Blocked question" }) + "\n" +
+    JSON.stringify({ role: "assistant", content: "Blocked answer", stop_reason: "end_turn" }) + "\n"
+  );
+  fs.chmodSync(unreadableDir, 0o000);
+
+  try {
+    const { pairs } = harvestProvider("claude", tmpDir, {});
+    assert.equal(pairs.length, 1, "readable dir must still be processed when a sibling subdir is unreadable");
+    assert.equal(pairs[0].prompt, "Good question");
+  } finally {
+    fs.chmodSync(unreadableDir, 0o755);
+  }
+});

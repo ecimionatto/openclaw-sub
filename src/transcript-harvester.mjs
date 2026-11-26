@@ -3,11 +3,18 @@ import path from "node:path";
 import os from "node:os";
 
 const GEMINI_TRANSCRIPT_NAME = "transcript.jsonl";
+const TERMINAL_STOP_REASONS = new Set(["end_turn", "max_tokens", "stop_sequence"]);
 
 function findJsonlFiles(dir, nameFilter = null) {
   if (!fs.existsSync(dir)) return [];
   const results = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       results.push(...findJsonlFiles(full, nameFilter));
@@ -36,18 +43,25 @@ function extractTextContent(content) {
   return "";
 }
 
-function hasToolBlock(content) {
-  return Array.isArray(content) && content.some((c) => c && (c.type === "tool_result" || c.type === "tool_use"));
+function hasToolResultBlock(content) {
+  return Array.isArray(content) && content.some((c) => c && c.type === "tool_result");
+}
+
+function filterToolUseBlocks(content) {
+  if (!Array.isArray(content)) return content;
+  return content.filter((c) => !c || c.type !== "tool_use");
 }
 
 function isToolResultOrMeta(obj) {
   if (obj.isMeta || obj.isSidechain) return true;
   if (obj.type === "tool_use" || obj.type === "tool_result") return true;
-  if (hasToolBlock(obj.content)) return true;
+  // Drop entries whose content is purely tool_result blocks (not real user prompts).
+  // tool_use blocks in assistant content are handled by filterToolUseBlocks, not dropped here.
+  if (hasToolResultBlock(obj.content)) return true;
   // Native Claude: {type:'user', message:{role:'user', content:[{type:'tool_result',...}]}}
-  if (obj.message && hasToolBlock(obj.message.content)) return true;
+  if (obj.message && hasToolResultBlock(obj.message.content)) return true;
   // Codex response_item: {type:'response_item', payload:{type:'message', content:[...]}}
-  if (obj.payload && hasToolBlock(obj.payload.content)) return true;
+  if (obj.payload && hasToolResultBlock(obj.payload.content)) return true;
   return false;
 }
 
@@ -86,11 +100,13 @@ function parseJsonlLines(filePath, fromLine = 0) {
         msgObj.role ||
         msgObj.type ||
         null;
-      const rawContent =
+      const rawContentRaw =
         (msgObj.message && msgObj.message.content) ||
         msgObj.content ||
         (msgObj.parts ? msgObj.parts.map((p) => p.text || "").join("") : null) ||
         "";
+      // Strip tool_use blocks from arrays so text survives when mixed with tool calls
+      const rawContent = filterToolUseBlocks(rawContentRaw);
       const text = extractTextContent(rawContent);
       const ts = obj.createdAt || obj.timestamp || obj.created_at || new Date().toISOString();
       const sessionId =
@@ -107,7 +123,11 @@ function parseJsonlLines(filePath, fromLine = 0) {
           ? "user"
           : null;
 
-      const stopReason = "stop_reason" in msgObj ? msgObj.stop_reason : "stop_reason" in obj ? obj.stop_reason : undefined;
+      const stopReason =
+        "stop_reason" in msgObj ? msgObj.stop_reason
+        : (msgObj.message && "stop_reason" in msgObj.message) ? msgObj.message.stop_reason
+        : "stop_reason" in obj ? obj.stop_reason
+        : undefined;
 
       if (role) turns.push({ role, content: text, timestamp: ts, sessionId, lineIdx: i, stopReason });
     } catch {
@@ -145,7 +165,8 @@ function pairTurns(turns, lastParsedLineIdx = Infinity) {
         // Record userTurn.lineIdx so watermark can park before it for re-read on next sync.
         const isAtEnd = lastAssistant.lineIdx + 1 >= lastParsedLineIdx;
         const hasStopReasonField = lastAssistant.stopReason !== undefined;
-        if (isAtEnd && hasStopReasonField && !lastAssistant.stopReason) {
+        const isTerminal = lastAssistant.stopReason != null && TERMINAL_STOP_REASONS.has(lastAssistant.stopReason);
+        if (isAtEnd && hasStopReasonField && !isTerminal) {
           heldBackAt = userTurn.lineIdx;
           break;
         }
