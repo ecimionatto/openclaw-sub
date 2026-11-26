@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,7 @@ import {
   runDoctor,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -409,6 +411,148 @@ test("inspectOpenClawJson reports missing agy-cli plugin path when absent from l
     !res3.issues.some((i) => i === "openclaw.json: plugins.load.paths does not include an agy-cli plugin path."),
     "No missing-agy-cli issue when load.paths includes an agy-cli entry (may still report missing-file)"
   );
+});
+
+test("generateSystemdService produces a valid unit file with Restart=on-failure and PATH", () => {
+  const result = generateSystemdService({ workspace: "/home/user/myproject", nodeBinDir: "/usr/local/bin" });
+  assert.ok(typeof result.content === "string", "content must be a string");
+  assert.match(result.content, /Restart=on-failure/);
+  assert.match(result.content, /WantedBy=default\.target/);
+  assert.match(result.content, /WorkingDirectory=\/home\/user\/myproject/);
+  assert.match(result.content, /PATH=\/usr\/local\/bin:/);
+  assert.match(result.content, /ExecStart=\/usr\/bin\/env openclaw gateway$/m);
+  assert.equal(result.serviceName, "openclaw-sub");
+  assert.match(result.suggestedPath, /openclaw-sub\.service$/);
+});
+
+test("generateSystemdService resolves relative workspace path to absolute", () => {
+  const result = generateSystemdService({ workspace: "./myrelproject", nodeBinDir: "/usr/local/bin" });
+  const lines = result.content.split("\n");
+  const wdLine = lines.find((l) => l.startsWith("WorkingDirectory="));
+  assert.ok(wdLine, "WorkingDirectory line must exist");
+  assert.ok(path.isAbsolute(wdLine.replace("WorkingDirectory=", "")), "WorkingDirectory must be absolute");
+});
+
+test("generateSystemdService escapes percent signs and spaces in paths", () => {
+  const result = generateSystemdService({
+    workspace: "/home/user/my project%test",
+    nodeBinDir: "/usr/local/bin",
+  });
+  assert.match(result.content, /WorkingDirectory=.*my project/, "literal space must be preserved in WorkingDirectory");
+  assert.match(result.content, /WorkingDirectory=.*%%test/, "percent must be doubled to %%");
+  assert.doesNotMatch(result.content, /WorkingDirectory=.*\\x20/, "\\x20 must not appear in WorkingDirectory");
+});
+
+test("generateSystemdService escapes percent signs and spaces in nodeBinDir for Environment=PATH", () => {
+  const result = generateSystemdService({
+    workspace: "/home/user/project",
+    nodeBinDir: "/home/user/my node%bin",
+  });
+  assert.match(result.content, /Environment=.*\\x20/, "space in nodeBinDir must become \\x20 in Environment=");
+  assert.match(result.content, /Environment=.*%%bin/, "percent in nodeBinDir must be doubled to %%");
+});
+
+test("install-systemd --enable exits 1 when systemctl fails", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-exit1-"));
+  const fakeSystemctl = path.join(tmpDir, "systemctl");
+  fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+  const binPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--enable", `--workspace=${tmpDir}`],
+    { env: { ...process.env, HOME: tmpDir, PATH: `${tmpDir}:${process.env.PATH}` }, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 1, "exit code must be 1 when daemon-reload or enable fails");
+});
+
+test("installSystemdService with enable=true calls systemctl daemon-reload and enable, not on dry-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-enable-"));
+  const called = [];
+  const fakeRunner = (cmd) => { called.push(cmd); };
+
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    enable: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(called.includes("systemctl --user daemon-reload"), "must call daemon-reload");
+  assert.ok(called.includes("systemctl --user enable openclaw-sub"), "must call enable");
+  assert.equal(result.enableResult.reloaded, true);
+  assert.equal(result.enableResult.enabled, true);
+  assert.deepEqual(result.enableResult.errors, []);
+
+  called.length = 0;
+  const dryResult = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    enable: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+  });
+  assert.equal(dryResult.dryRun, true);
+  assert.equal(called.length, 0, "dry-run must not call runner even with --enable");
+});
+
+test("installSystemdService with enable=true reports runner failures in enableResult.errors", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-fail-"));
+  const failRunner = (cmd) => { throw new Error(`${cmd}: mock failure`); };
+
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    enable: true,
+    homeDir: tmpDir,
+    runner: failRunner,
+  });
+
+  assert.equal(result.ok, true, "file was written, so ok should be true");
+  assert.equal(result.enableResult.reloaded, false);
+  assert.equal(result.enableResult.enabled, false);
+  assert.equal(result.enableResult.errors.length, 2);
+  assert.match(result.enableResult.errors[0], /daemon-reload failed/);
+  assert.match(result.enableResult.errors[1], /enable openclaw-sub failed/);
+});
+
+test("installSystemdService dry-run returns content and instructions without writing", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-"));
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    homeDir: tmpDir,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, true);
+  assert.match(result.content, /Restart=on-failure/);
+  assert.ok(Array.isArray(result.lingerInstructions));
+  assert.ok(result.lingerInstructions.some((l) => /loginctl enable-linger/.test(l)));
+  assert.ok(result.lingerInstructions.some((l) => /systemctl --user enable openclaw-sub/.test(l)));
+  assert.equal(fs.existsSync(result.servicePath), false, "dry-run must not write the file");
+});
+
+test("installSystemdService writes service file to correct path when not dry-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-write-"));
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    homeDir: tmpDir,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, false);
+  assert.equal(fs.existsSync(result.servicePath), true, "service file must be written");
+  const written = fs.readFileSync(result.servicePath, "utf8");
+  assert.match(written, /Restart=on-failure/);
+  assert.match(written, /WantedBy=default\.target/);
 });
 
 test("inspectOpenClawJson expands ~ paths before checking existence", () => {
