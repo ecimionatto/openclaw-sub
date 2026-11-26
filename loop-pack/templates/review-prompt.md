@@ -11,8 +11,10 @@ You are a blind code reviewer. Review PR #<<PR_NUMBER>> on branch feat/<<TASK-ID
 <<paste acceptance criteria from the original task description>>
 
 ## Instructions
+0. Get the head sha: run `gh pr view <<PR_NUMBER>> --json headRefOid --jq '.headRefOid'` and record it as `<HEAD commit sha>`.
 1. Fetch the diff: `gh pr diff <<PR_NUMBER>>`
 2. Check: correctness, test coverage, adherence to repo constraints: <<repo constraints>>.
+2b. Confirm CI checks pass: `gh pr checks <<PR_NUMBER>>` — APPROVE only if all required checks are green.
 3. Output exactly ONE of the following verdicts as the **last line** of your response:
 
 ```

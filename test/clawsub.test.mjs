@@ -1071,7 +1071,7 @@ test("loopInit resolves relative workspace to absolute and quotes paths in cron 
   const result = loopInit({ workspace: relPath, dryRun: true });
 
   assert.ok(path.isAbsolute(result.destDir), "destDir must be absolute");
-  assert.ok(result.cronLines.some((l) => l.includes(`"${tmpDir}"`)), "cron lines must quote the absolute workspace path");
+  assert.ok(result.cronLines.some((l) => l.includes(`'${tmpDir}'`)), "cron lines must single-quote the absolute workspace path");
 });
 
 test("loopInit force=true overwrites an edited file", () => {
@@ -1090,8 +1090,14 @@ test("loopInit force=true overwrites an edited file", () => {
 test("loopInit cron lines escape percent signs for crontab compatibility", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-cron-"));
   const result = loopInit({ workspace: tmpDir, dryRun: true });
-  for (const line of result.cronLines) {
-    assert.ok(!/^[^#].*(?<!\\)%/.test(line), `cron line must not contain unescaped % (crontab treats it as newline): ${line}`);
+  // Strip leading '# ' to get the actual schedule content (all lines are commented out as examples)
+  const scheduleLines = result.cronLines
+    .map((l) => l.replace(/^#\s*/, ""))
+    .filter((l) => /^[\d*]/.test(l));
+  assert.ok(scheduleLines.length >= 1, "at least one schedule line must exist");
+  assert.ok(scheduleLines.some((l) => l.includes("%")), "at least one schedule line must contain % (to verify escaping is tested)");
+  for (const line of scheduleLines) {
+    assert.ok(!/(?<!\\)%/.test(line), `schedule line must not contain unescaped % (crontab treats it as newline): ${line}`);
   }
 });
 

@@ -36,12 +36,12 @@ export function loopInit({ workspace = process.cwd(), dryRun = false, force = fa
     copied.push(dest);
   }
 
-  const quotedWorkspace = `"${resolvedWorkspace}"`;
+  const quotedWorkspace = "'" + resolvedWorkspace.replace(/'/g, "'\\''").replace(/%/g, "\\%") + "'";
   const cronLines = [
-    `# Worker tick — replace AGENT_CMD with your agent invocation (e.g. claude --print)`,
-    `# */30 * * * * cd ${quotedWorkspace} && AGENT_CMD "$(cat .clawsub-loop/templates/worker-prompt.md)" >> .clawsub-loop/worker.log 2>&1`,
-    `# Daily standup — append a row to standup.md at 09:00 Mon-Fri`,
-    `# 0 9 * * 1-5 cd ${quotedWorkspace} && echo "| $(date +\\%F) | TASK | PR | verdict | notes |" >> .clawsub-loop/templates/standup.md`,
+    `# Worker tick — 1) fill in .clawsub-loop/templates/worker-prompt.md with real values and save as .clawsub-loop/worker.prompt.md; 2) set AGENT_CMD to your agent CLI (e.g. claude --print)`,
+    `# */30 * * * * cd ${quotedWorkspace} && AGENT_CMD "$(cat .clawsub-loop/worker.prompt.md)" >> .clawsub-loop/worker.log 2>&1`,
+    `# Daily standup at 09:00 Mon-Fri — AGENT_CMD reviews merged PRs for the day and appends a row to standup.md`,
+    `# 0 9 * * 1-5 cd ${quotedWorkspace} && AGENT_CMD "List PRs merged today ($(date +\\%F)) and append a | date | task | PR | verdict | notes | row to .clawsub-loop/templates/standup.md" >> .clawsub-loop/standup.log 2>&1`,
   ];
 
   return { destDir, copied, skipped, cronLines, dryRun };
