@@ -229,12 +229,34 @@ export function buildSessionHandoffHeader(store, { sessionKey = "main", targetPr
  */
 export function syncNativeTranscripts(
   store,
-  { sessionKey = "main", transcriptDirs = {}, now = new Date() } = {}
+  { sessionKey = "main", transcriptDirs = {}, now = new Date(), maxInitialBackfill = 30 } = {}
 ) {
   const watermarks = store.harvestWatermarks || {};
+  const isInitialSync = Object.keys(watermarks).length === 0;
+
   const { pairs, watermarks: nextWatermarks } = harvestAll({ transcriptDirs, watermarks });
   store.harvestWatermarks = nextWatermarks;
-  for (const p of pairs) {
+
+  // Sort chronologically so the 30-turn cap keeps the latest delta, not arbitrary order
+  const sorted = [...pairs].sort((a, b) => {
+    const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return ta - tb;
+  });
+
+  const toImport = isInitialSync ? sorted.slice(-maxInitialBackfill) : sorted;
+
+  // Deduplicate against turns already recorded by clawsub run/exec
+  const session = getSessionBaton(store, sessionKey);
+  const existingFingerprints = new Set(
+    session.turns.map((t) => `${t.prompt}|${t.response}`)
+  );
+
+  let imported = 0;
+  for (const p of toImport) {
+    const fp = `${p.prompt}|${p.response}`;
+    if (existingFingerprints.has(fp)) continue;
+    existingFingerprints.add(fp);
     recordCompletedTurn(store, {
       sessionKey,
       provider: p.provider,
@@ -243,8 +265,10 @@ export function syncNativeTranscripts(
       response: p.response,
       now: p.timestamp ? new Date(p.timestamp) : now,
     });
+    imported++;
   }
-  return { imported: pairs.length };
+
+  return { imported };
 }
 
 /**
