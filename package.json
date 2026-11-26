@@ -17,7 +17,6 @@
     "skills/",
     "scripts/",
     "docs/",
-    "test/e2e/",
     ".well-known/",
     "llms.txt",
     "llms-full.txt",

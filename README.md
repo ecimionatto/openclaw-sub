@@ -161,6 +161,21 @@ clawsub doctor
 clawsub test
 ```
 
+### Run end-to-end tests
+
+The e2e suite packs the package as a tarball, installs it into a temp directory, and verifies the full init → doctor → failover → baton → install-skill flow using stub CLIs (no real Claude/Codex required).
+
+```bash
+npm run test:e2e
+```
+
+**Docker variant** (clean Ubuntu environment, mirrors CI):
+```bash
+docker build -t clawsub-e2e -f test/e2e/Dockerfile . && docker run --rm clawsub-e2e
+```
+
+**CI matrix** (`.github/workflows/e2e.yml`) runs the suite on `ubuntu-latest` with Node 18, 20, and 22 on every push and pull request to `main`.
+
 ### Route a prompt through the chain manually
 ```bash
 clawsub run "Summarize today's git commits in 3 bullets"

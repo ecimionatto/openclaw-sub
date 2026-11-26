@@ -3,7 +3,7 @@ FROM node:22-slim
 # No claude/codex/agy installed — fresh environment
 WORKDIR /app
 
-# Copy packed tarball and e2e scripts (passed in via docker build context)
+# Copy the full repo; tarball is packed inside the container by run.sh
 COPY . /app/
 
 # Make stubs executable

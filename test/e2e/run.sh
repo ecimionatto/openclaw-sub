@@ -40,9 +40,9 @@ echo "==> 2. clawsub version (alias)"
 "$CLAWSUB" version >/dev/null 2>&1 && pass "version command exited 0" || fail "version command failed"
 
 echo "==> 3. clawsub init --chain claude,codex,agy"
-"$CLAWSUB" init --chain claude,codex,agy 2>&1 | head -5 || true
-CONFIG_FILE=$(find "$WORK" "$HOME" -name "clawsub.json" 2>/dev/null | head -1)
-[ -n "$CONFIG_FILE" ] && pass "init wrote clawsub.json: $CONFIG_FILE" || fail "init did not write clawsub.json under $WORK or $HOME"
+"$CLAWSUB" init --chain claude,codex,agy 2>&1
+CONFIG_FILE="$CLAWSUB_HOME/clawsub.json"
+[ -f "$CONFIG_FILE" ] && pass "init wrote clawsub.json at $CONFIG_FILE" || fail "init did not write clawsub.json at $CONFIG_FILE"
 
 echo "==> 4. clawsub doctor"
 # Fake auth files so at least one provider appears authenticated
@@ -53,20 +53,38 @@ echo '{}' > "$HOME/.gemini/antigravity-cli/settings.json"
 "$CLAWSUB" doctor >/dev/null 2>&1 && pass "doctor exited 0" || fail "doctor failed"
 
 echo "==> 5. clawsub run (failover claude->codex, writes baton)"
-RUN_OUT=$("$CLAWSUB" run "hello world" 2>&1) || true
-echo "$RUN_OUT" | grep -qi "codex\|stub-codex\|failover\|provider\|ok" \
-  && pass "run output references codex/failover" \
-  || fail "run did not show codex failover. Output: $RUN_OUT"
-BATON_FILE=$(find "$WORK" -name "clawsub-baton*.json" 2>/dev/null | head -1)
-[ -n "$BATON_FILE" ] && pass "baton file written: $BATON_FILE" || {
-  echo "  NOTE: baton file not found (may be stored in-memory or state file)"
-  pass "run completed (baton tracking optional in e2e)"
-}
+RUN_OUT=$("$CLAWSUB" run "hello world" 2>&1)
+[ $? -eq 0 ] || fail "run exited non-zero. Output: $RUN_OUT"
+echo "$RUN_OUT" | grep -qF "stub-codex-response: ok" \
+  && pass "run output contains 'stub-codex-response: ok'" \
+  || fail "run did not output 'stub-codex-response: ok'. Output: $RUN_OUT"
+
+BATON_FILE="$CLAWSUB_HOME/clawsub-baton.json"
+[ -f "$BATON_FILE" ] \
+  && pass "baton file written at $BATON_FILE" \
+  || fail "baton file not found at $BATON_FILE"
+
+BATON_CONTENT=$(cat "$BATON_FILE")
+node -e "
+  const d = JSON.parse(require('fs').readFileSync('$BATON_FILE', 'utf8'));
+  const s = Object.values(d.sessions)[0];
+  if (s.lastProvider !== 'codex') { console.error('lastProvider: ' + s.lastProvider); process.exit(1); }
+" && pass "baton lastProvider is codex (failover confirmed)" \
+  || fail "baton lastProvider is not codex. Content: $BATON_CONTENT"
+
+# State file must show claude in cooldown (proves claude was tried first and hit quota)
+STATE_FILE="$CLAWSUB_HOME/clawsub-state.json"
+[ -f "$STATE_FILE" ] || fail "state file not found at $STATE_FILE"
+node -e "
+  const d = JSON.parse(require('fs').readFileSync('$STATE_FILE', 'utf8'));
+  if (d.providers?.claude?.status !== 'cooldown') { console.error('claude status: ' + d.providers?.claude?.status); process.exit(1); }
+" && pass "state records claude quota exhaustion (cooldown)" \
+  || fail "state does not show claude in cooldown. Content: $(cat "$STATE_FILE")"
 
 echo "==> 6. clawsub install-skill"
-"$CLAWSUB" install-skill --workspace "$WORK/workspace" 2>&1 || true
-SKILL_FILE=$(find "$WORK" -name "SKILL.md" 2>/dev/null | head -1)
-[ -n "$SKILL_FILE" ] && pass "install-skill wrote SKILL.md: $SKILL_FILE" || fail "install-skill did not write SKILL.md"
+"$CLAWSUB" install-skill --workspace "$WORK/workspace" 2>&1
+SKILL_FILE="$WORK/workspace/skills/clawsub/SKILL.md"
+[ -f "$SKILL_FILE" ] && pass "install-skill wrote SKILL.md at $SKILL_FILE" || fail "install-skill did not write SKILL.md at $SKILL_FILE"
 
 echo ""
 echo "All e2e assertions passed."
