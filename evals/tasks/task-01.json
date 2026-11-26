@@ -1,0 +1,11 @@
+{
+  "id": "task-01",
+  "title": "Add clawsub version --json flag",
+  "prompt": "Add a --json flag to `clawsub version` that outputs {version, node} as JSON instead of the human-readable string. Update the help text. Add a unit test.",
+  "acceptanceCriteria": [
+    "clawsub version --json outputs valid JSON with 'version' and 'node' keys",
+    "clawsub version (no flag) still outputs the human-readable version string",
+    "help text includes --json in the version command signature",
+    "unit test covers both --json and plain output"
+  ]
+}

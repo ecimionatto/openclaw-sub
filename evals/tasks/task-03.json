@@ -1,0 +1,11 @@
+{
+  "id": "task-03",
+  "title": "parseLog tolerates blank lines and comment lines",
+  "prompt": "Update src/eval/metrics.mjs parseLog() to silently skip blank lines and lines starting with '#' (comments). Add unit tests for both cases using inline fixture strings.",
+  "acceptanceCriteria": [
+    "parseLog returns no event for a blank line",
+    "parseLog returns no event for a line starting with '#'",
+    "parseLog still returns correct events for valid lines interleaved with blanks and comments",
+    "unit test covers all three cases"
+  ]
+}

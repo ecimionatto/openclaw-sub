@@ -1,0 +1,11 @@
+{
+  "id": "task-02",
+  "title": "clawsub status exits non-zero when no provider is ready",
+  "prompt": "Make `clawsub status` exit with code 1 when zero providers in the chain are both installed and authenticated. Currently it always exits 0. Add a unit test using a mock state with no ready providers.",
+  "acceptanceCriteria": [
+    "clawsub status exits 0 when at least one provider is ready",
+    "clawsub status exits 1 when no providers are ready",
+    "unit test covers both exit-code paths without spawning real CLIs",
+    "no changes to the human-readable output format"
+  ]
+}
