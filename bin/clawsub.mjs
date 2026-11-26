@@ -262,15 +262,13 @@ function cmdInstallSystemd(flags) {
     }
   }
 
-  if (!enable || (res.enableResult && res.enableResult.errors.length > 0)) {
-    console.log("To enable OpenClaw to survive reboots and SSH disconnects, run:");
-    for (const cmd of res.lingerInstructions) {
-      console.log(`  $ ${cmd}`);
-    }
-    console.log(
-      "\n💡 loginctl enable-linger ensures your systemd --user services start at boot without a login session."
-    );
+  console.log("To complete setup and survive reboots and SSH disconnects, run:");
+  for (const cmd of res.lingerInstructions) {
+    console.log(`  $ ${cmd}`);
   }
+  console.log(
+    "\n💡 loginctl enable-linger ensures your systemd --user services start at boot without a login session."
+  );
 }
 
 function cmdInstallSkill(flags) {

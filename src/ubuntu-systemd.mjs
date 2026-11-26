@@ -2,11 +2,12 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+function escapeSystemdPath(str) {
+  return str.replace(/%/g, "%%");
+}
 
-function escapeSystemdValue(str) {
+function escapeSystemdEnvValue(str) {
   return str.replace(/%/g, "%%").replace(/ /g, "\\x20");
 }
 
@@ -14,8 +15,8 @@ export function generateSystemdService({ workspace, nodeBinDir } = {}) {
   const resolvedNodeBinDir = path.resolve(nodeBinDir || path.dirname(process.execPath));
   const resolvedWorkspace = path.resolve(workspace || process.cwd());
 
-  const escapedWorkspace = escapeSystemdValue(resolvedWorkspace);
-  const escapedNodeBinDir = escapeSystemdValue(resolvedNodeBinDir);
+  const escapedWorkspace = escapeSystemdPath(resolvedWorkspace);
+  const escapedNodeBinDir = escapeSystemdEnvValue(resolvedNodeBinDir);
 
   const content = `[Unit]
 Description=OpenClaw + clawsub subscription manager
@@ -25,7 +26,7 @@ After=network.target
 Type=simple
 WorkingDirectory=${escapedWorkspace}
 Environment="PATH=${escapedNodeBinDir}:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/env openclaw
+ExecStart=/usr/bin/env openclaw gateway
 Restart=on-failure
 RestartSec=5
 

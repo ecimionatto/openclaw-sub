@@ -419,7 +419,7 @@ test("generateSystemdService produces a valid unit file with Restart=on-failure 
   assert.match(result.content, /WantedBy=default\.target/);
   assert.match(result.content, /WorkingDirectory=\/home\/user\/myproject/);
   assert.match(result.content, /PATH=\/usr\/local\/bin:/);
-  assert.match(result.content, /ExecStart=\/usr\/bin\/env openclaw$/m);
+  assert.match(result.content, /ExecStart=\/usr\/bin\/env openclaw gateway$/m);
   assert.equal(result.serviceName, "openclaw-sub");
   assert.match(result.suggestedPath, /openclaw-sub\.service$/);
 });
@@ -429,7 +429,7 @@ test("generateSystemdService resolves relative workspace path to absolute", () =
   const lines = result.content.split("\n");
   const wdLine = lines.find((l) => l.startsWith("WorkingDirectory="));
   assert.ok(wdLine, "WorkingDirectory line must exist");
-  assert.ok(path.isAbsolute(wdLine.replace("WorkingDirectory=", "").replace(/\\x20/g, " ")), "WorkingDirectory must be absolute");
+  assert.ok(path.isAbsolute(wdLine.replace("WorkingDirectory=", "")), "WorkingDirectory must be absolute");
 });
 
 test("generateSystemdService escapes percent signs and spaces in paths", () => {
@@ -437,9 +437,9 @@ test("generateSystemdService escapes percent signs and spaces in paths", () => {
     workspace: "/home/user/my project%test",
     nodeBinDir: "/usr/local/bin",
   });
-  assert.match(result.content, /WorkingDirectory=.*\\x20/, "space must be escaped as \\x20");
+  assert.match(result.content, /WorkingDirectory=.*my project/, "literal space must be preserved in WorkingDirectory");
   assert.match(result.content, /WorkingDirectory=.*%%test/, "percent must be doubled to %%");
-  assert.doesNotMatch(result.content, /WorkingDirectory=.*my project/, "unescaped space must not appear");
+  assert.doesNotMatch(result.content, /WorkingDirectory=.*\\x20/, "\\x20 must not appear in WorkingDirectory");
 });
 
 test("installSystemdService with enable=true calls systemctl daemon-reload and enable, not on dry-run", () => {
