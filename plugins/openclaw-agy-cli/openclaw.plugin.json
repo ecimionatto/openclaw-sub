@@ -5,6 +5,7 @@
   "description": "Routes agy-cli (Antigravity/Gemini CLI) with headless-safe flags for OpenClaw subscription mode",
   "runtime": "agy-cli",
   "entrypoint": "./index.js",
+  "configSchema": {},
   "flags": [
     "--dangerously-skip-permissions",
     "--disable-slash-commands",

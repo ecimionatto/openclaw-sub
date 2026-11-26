@@ -19,9 +19,22 @@ export function run(prompt, opts = {}) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  if (result.error) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: result.error.message,
+    };
+  }
   return {
     exitCode: result.status ?? 1,
     stdout: result.stdout || "",
     stderr: result.stderr || "",
   };
 }
+
+export const plugin = {
+  id: "openclaw-agy-cli",
+  runtimeId,
+  run,
+};

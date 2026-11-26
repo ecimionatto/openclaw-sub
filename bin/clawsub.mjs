@@ -8,9 +8,9 @@ import {
   saveBatonStore,
 } from "../src/baton.mjs";
 import { configureOpenClawJson, generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
+import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
 import { routePrompt } from "../src/router.mjs";
 import {
   getDefaultStateDir,

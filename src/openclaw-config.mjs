@@ -30,22 +30,43 @@ export function configureOpenClawJson(opts = {}) {
   let existing = {};
   let backupPath = null;
   if (fs.existsSync(openclawConfigPath)) {
+    const raw = fs.readFileSync(openclawConfigPath, "utf8");
     try {
-      existing = JSON.parse(fs.readFileSync(openclawConfigPath, "utf8"));
-    } catch {
-      existing = {};
+      existing = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(
+        `openclaw.json at ${openclawConfigPath} is not valid JSON — fix or remove it first.\n${e.message}`
+      );
     }
     backupPath = `${openclawConfigPath}.clawsub-${Date.now()}.bak`;
     fs.copyFileSync(openclawConfigPath, backupPath);
   }
 
   const primaryRuntimeId = RUNTIME_ID_MAP[chain[0]] || chain[0];
+  const fallbackRuntimeIds = chain.slice(1).map((p) => RUNTIME_ID_MAP[p] || p);
+
   const existingPlugins = existing.plugins || {};
   const existingLoadPaths = (existingPlugins.load || {}).paths || [];
   const loadPaths =
     pluginDir && !existingLoadPaths.includes(pluginDir)
       ? [...existingLoadPaths, pluginDir]
       : existingLoadPaths;
+
+  const existingModels = ((existing.agents || {}).defaults || {}).models || {};
+  const newModels = {};
+  for (const prov of chain) {
+    const rid = RUNTIME_ID_MAP[prov] || prov;
+    newModels[rid] = { ...(existingModels[rid] || {}), agentRuntime: { id: rid } };
+  }
+  const mergedModels = { ...existingModels, ...newModels };
+
+  const pluginsUpdate = {
+    ...existingPlugins,
+    sessionCatalog: { ...(existingPlugins.sessionCatalog || {}), enabled: false },
+    ...(pluginDir || existingLoadPaths.length > 0
+      ? { load: { ...(existingPlugins.load || {}), paths: loadPaths } }
+      : {}),
+  };
 
   const updated = {
     ...existing,
@@ -54,19 +75,11 @@ export function configureOpenClawJson(opts = {}) {
       ...(existing.agents || {}),
       defaults: {
         ...((existing.agents || {}).defaults || {}),
-        model: chain[0],
-        models: chain,
+        model: { primary: primaryRuntimeId, fallbacks: fallbackRuntimeIds },
+        models: mergedModels,
       },
     },
-    sessionCatalog: { ...(existing.sessionCatalog || {}), enabled: false },
-    ...(pluginDir || existingLoadPaths.length > 0
-      ? {
-          plugins: {
-            ...existingPlugins,
-            load: { ...(existingPlugins.load || {}), paths: loadPaths },
-          },
-        }
-      : {}),
+    plugins: pluginsUpdate,
   };
 
   fs.writeFileSync(openclawConfigPath, JSON.stringify(updated, null, 2) + "\n", "utf8");

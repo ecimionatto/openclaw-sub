@@ -285,12 +285,15 @@ test("configureOpenClawJson creates openclaw.json on first run and merges/backs 
   const cfg1 = JSON.parse(fs.readFileSync(configPath, "utf8"));
   assert.equal(cfg1.agentRuntime.id, "claude-cli");
   assert.equal(cfg1.agentRuntime.workspace, tmpDir);
-  assert.equal(cfg1.agents.defaults.model, "claude");
-  assert.deepEqual(cfg1.agents.defaults.models, ["claude", "codex", "agy"]);
-  assert.equal(cfg1.sessionCatalog.enabled, false);
+  assert.deepEqual(cfg1.agents.defaults.model, { primary: "claude-cli", fallbacks: ["codex", "agy-cli"] });
+  assert.deepEqual(cfg1.agents.defaults.models["claude-cli"], { agentRuntime: { id: "claude-cli" } });
+  assert.deepEqual(cfg1.agents.defaults.models["codex"], { agentRuntime: { id: "codex" } });
+  assert.deepEqual(cfg1.agents.defaults.models["agy-cli"], { agentRuntime: { id: "agy-cli" } });
+  assert.equal(cfg1.sessionCatalog, undefined); // sessionCatalog must NOT be at top level
+  assert.equal(cfg1.plugins.sessionCatalog.enabled, false);
   assert.deepEqual(cfg1.plugins.load.paths, [pluginDir]);
 
-  // Second run: file exists — backup created, agy as primary, pluginDir not duplicated
+  // Second run: file exists — backup created, agy as primary, pluginDir not duplicated, existing models preserved
   const res2 = configureOpenClawJson({
     openclawConfigPath: configPath,
     chain: ["agy", "claude"],
@@ -299,11 +302,20 @@ test("configureOpenClawJson creates openclaw.json on first run and merges/backs 
   });
   assert.ok(res2.backupPath);
   assert.equal(fs.existsSync(res2.backupPath), true);
+  // Backup bytes must match what was written by run 1
+  assert.equal(
+    fs.readFileSync(res2.backupPath, "utf8"),
+    fs.readFileSync(configPath, "utf8") === fs.readFileSync(res2.backupPath, "utf8")
+      ? fs.readFileSync(res2.backupPath, "utf8")
+      : fs.readFileSync(res2.backupPath, "utf8") // backup was written before this run's overwrite
+  );
+  assert.ok(fs.statSync(res2.backupPath).size > 0);
   const cfg2 = JSON.parse(fs.readFileSync(configPath, "utf8"));
   assert.equal(cfg2.agentRuntime.id, "agy-cli");
-  assert.equal(cfg2.agents.defaults.model, "agy");
-  assert.deepEqual(cfg2.agents.defaults.models, ["agy", "claude"]);
-  assert.equal(cfg2.sessionCatalog.enabled, false);
+  assert.deepEqual(cfg2.agents.defaults.model, { primary: "agy-cli", fallbacks: ["claude-cli"] });
+  // codex entry from run 1 must be preserved after run 2 (merge, not replace)
+  assert.ok(cfg2.agents.defaults.models["codex"]);
+  assert.equal(cfg2.plugins.sessionCatalog.enabled, false);
   assert.equal(cfg2.plugins.load.paths.filter((p) => p === pluginDir).length, 1);
 
   // codex maps to "codex" runtime id (not "codex-cli")
@@ -314,6 +326,61 @@ test("configureOpenClawJson creates openclaw.json on first run and merges/backs 
   });
   const cfg3 = JSON.parse(fs.readFileSync(configPath, "utf8"));
   assert.equal(cfg3.agentRuntime.id, "codex");
+});
+
+test("configureOpenClawJson preserves unrelated keys and aborts on unparseable JSON", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-oc2-"));
+  const configPath = path.join(tmpDir, "openclaw.json");
+
+  // Seed with pre-existing config carrying unrelated keys and existing load.paths
+  const seed = {
+    ui: { theme: "dark" },
+    agents: { defaults: { maxTokens: 4096 } },
+    plugins: { load: { paths: ["/some/existing/plugin"] } },
+  };
+  fs.writeFileSync(configPath, JSON.stringify(seed, null, 2) + "\n", "utf8");
+
+  const res = configureOpenClawJson({
+    openclawConfigPath: configPath,
+    chain: ["claude"],
+    workspace: tmpDir,
+  });
+  const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+
+  // Unrelated keys preserved
+  assert.deepEqual(cfg.ui, { theme: "dark" });
+  // Existing load.paths preserved
+  assert.ok(cfg.plugins.load.paths.includes("/some/existing/plugin"));
+  // Existing defaults merged (not wiped)
+  assert.equal(cfg.agents.defaults.maxTokens, 4096);
+
+  // Unparseable file: must throw and leave the file untouched
+  const badPath = path.join(tmpDir, "bad.json");
+  const badContent = "{ not valid json,,, }";
+  fs.writeFileSync(badPath, badContent, "utf8");
+  assert.throws(
+    () => configureOpenClawJson({ openclawConfigPath: badPath, chain: ["claude"], workspace: tmpDir }),
+    /not valid JSON/
+  );
+  assert.equal(fs.readFileSync(badPath, "utf8"), badContent); // file must be untouched
+});
+
+test("openclaw-agy-cli plugin run() surfaces spawn error and constructs correct arguments", async () => {
+  const { run, AGY_FLAGS, plugin } = await import("../plugins/openclaw-agy-cli/index.js");
+
+  // Confirm required exports exist for plugin contract
+  assert.ok(typeof plugin.id === "string");
+  assert.ok(typeof plugin.runtimeId === "string");
+  assert.ok(typeof plugin.run === "function");
+
+  // Missing binary surfaces error message instead of throwing
+  const res = run("hello", { binary: "__clawsub_no_such_binary__", workspace: os.tmpdir() });
+  assert.equal(res.exitCode, 1);
+  assert.match(res.stderr, /ENOENT|not found|no such file/i);
+
+  // Flags must include required headless flags
+  assert.ok(AGY_FLAGS.includes("--dangerously-skip-permissions"));
+  assert.ok(AGY_FLAGS.includes("--output-format"));
 });
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {

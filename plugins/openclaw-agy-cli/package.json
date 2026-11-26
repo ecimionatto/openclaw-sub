@@ -6,5 +6,8 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js"
+  },
+  "openclaw": {
+    "extensions": ["./index.js"]
   }
 }
