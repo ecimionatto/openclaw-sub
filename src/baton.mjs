@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { getDefaultStateDir } from "./state.mjs";
+import { harvestAll } from "./transcript-harvester.mjs";
 
 const MAX_TURNS_STORED = 30;
 const MAX_HANDOFF_TURNS = 8;
@@ -23,6 +24,7 @@ export function loadBatonStore(stateDir = getDefaultStateDir()) {
     return {
       sessions: raw.sessions || {},
       updatedAt: raw.updatedAt || null,
+      harvestWatermarks: raw.harvestWatermarks || {},
     };
   } catch {
     return { sessions: {}, updatedAt: null };
@@ -219,6 +221,30 @@ export function buildSessionHandoffHeader(store, { sessionKey = "main", targetPr
 
   lines.push("[END CLAWSUB SESSION BATON]", "");
   return lines.join("\n");
+}
+
+/**
+ * Harvests native CLI transcripts and merges new turn pairs into the baton store.
+ * Watermarks are persisted in `store.harvestWatermarks` to avoid re-importing.
+ */
+export function syncNativeTranscripts(
+  store,
+  { sessionKey = "main", transcriptDirs = {}, now = new Date() } = {}
+) {
+  const watermarks = store.harvestWatermarks || {};
+  const { pairs, watermarks: nextWatermarks } = harvestAll({ transcriptDirs, watermarks });
+  store.harvestWatermarks = nextWatermarks;
+  for (const p of pairs) {
+    recordCompletedTurn(store, {
+      sessionKey,
+      provider: p.provider,
+      nativeSessionId: p.sessionId,
+      prompt: p.prompt,
+      response: p.response,
+      now: p.timestamp ? new Date(p.timestamp) : now,
+    });
+  }
+  return { imported: pairs.length };
 }
 
 /**
