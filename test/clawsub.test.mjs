@@ -1073,3 +1073,38 @@ test("loopInit resolves relative workspace to absolute and quotes paths in cron 
   assert.ok(path.isAbsolute(result.destDir), "destDir must be absolute");
   assert.ok(result.cronLines.some((l) => l.includes(`"${tmpDir}"`)), "cron lines must quote the absolute workspace path");
 });
+
+test("loopInit force=true overwrites an edited file", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-force-"));
+  loopInit({ workspace: tmpDir });
+
+  const backlogPath = path.join(tmpDir, ".clawsub-loop", "templates", "BACKLOG.md");
+  fs.writeFileSync(backlogPath, "custom content");
+
+  const result = loopInit({ workspace: tmpDir, force: true });
+  assert.ok(result.copied.some((p) => p.endsWith("BACKLOG.md")), "BACKLOG.md must be in copied with force=true");
+  assert.equal(result.skipped.length, 0, "nothing should be skipped when force=true");
+  assert.notEqual(fs.readFileSync(backlogPath, "utf8"), "custom content", "file must be overwritten");
+});
+
+test("loopInit cron lines escape percent signs for crontab compatibility", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-cron-"));
+  const result = loopInit({ workspace: tmpDir, dryRun: true });
+  for (const line of result.cronLines) {
+    assert.ok(!/^[^#].*(?<!\\)%/.test(line), `cron line must not contain unescaped % (crontab treats it as newline): ${line}`);
+  }
+});
+
+test("CLI loop init --force passes force to loopInit and overwrites files", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-cli-force-"));
+  loopInit({ workspace: tmpDir });
+
+  const backlogPath = path.join(tmpDir, ".clawsub-loop", "templates", "BACKLOG.md");
+  fs.writeFileSync(backlogPath, "edited");
+
+  spawnSync(process.execPath, ["./bin/clawsub.mjs", "loop", "init", "--workspace", tmpDir, "--force"], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."),
+  });
+
+  assert.notEqual(fs.readFileSync(backlogPath, "utf8"), "edited", "--force must overwrite edited file via CLI");
+});

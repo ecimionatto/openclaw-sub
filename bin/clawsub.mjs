@@ -32,7 +32,7 @@ function printHelp() {
 Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemini) with $0 API bills.
 
 Usage:
-  clawsub loop init [--workspace <path>] [--dry-run]
+  clawsub loop init [--workspace <path>] [--dry-run] [--force]
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
   clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
@@ -491,7 +491,8 @@ function cmdLoopInit(flags) {
   const workspace = flags.workspace || config.workspace || process.cwd();
   const dryRun = Boolean(flags["dry-run"]);
 
-  const result = loopInit({ workspace, dryRun });
+  const force = Boolean(flags.force);
+  const result = loopInit({ workspace, dryRun, force });
 
   if (dryRun) {
     console.log("🦞 clawsub loop init (dry-run)\n");
@@ -505,6 +506,12 @@ function cmdLoopInit(flags) {
     console.log(`Copied loop-pack to: ${result.destDir}\n`);
     for (const p of result.copied) {
       console.log(`  ✓ ${p}`);
+    }
+    if (result.skipped.length > 0) {
+      console.log("\nSkipped (already exist — use --force to overwrite):");
+      for (const p of result.skipped) {
+        console.log(`  ⊘ ${p}`);
+      }
     }
   }
 

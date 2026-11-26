@@ -12,7 +12,7 @@ You are a fix agent. A blind reviewer sent back PR #<<PR_NUMBER>> with the follo
 **Repo:** <<owner/repo>>
 
 ## Instructions
-1. Check out the branch and read the diff since the review sha.
+1. Check out the branch and read the PR diff at the review sha (e.g. `git diff <review-sha>...HEAD`).
 2. Address only the issues listed in the FIX reason. Do not refactor unrelated code.
 3. Run `<<test command>>`; all tests must pass.
 4. Commit with message: `fix(<<TASK-ID>>): <<short fix description>>`

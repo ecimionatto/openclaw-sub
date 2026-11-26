@@ -41,7 +41,7 @@ export function loopInit({ workspace = process.cwd(), dryRun = false, force = fa
     `# Worker tick — replace AGENT_CMD with your agent invocation (e.g. claude --print)`,
     `# */30 * * * * cd ${quotedWorkspace} && AGENT_CMD "$(cat .clawsub-loop/templates/worker-prompt.md)" >> .clawsub-loop/worker.log 2>&1`,
     `# Daily standup — append a row to standup.md at 09:00 Mon-Fri`,
-    `# 0 9 * * 1-5 cd ${quotedWorkspace} && echo "| $(date +%F) | TASK | PR | verdict | notes |" >> .clawsub-loop/templates/standup.md`,
+    `# 0 9 * * 1-5 cd ${quotedWorkspace} && echo "| $(date +\\%F) | TASK | PR | verdict | notes |" >> .clawsub-loop/templates/standup.md`,
   ];
 
   return { destDir, copied, skipped, cronLines, dryRun };

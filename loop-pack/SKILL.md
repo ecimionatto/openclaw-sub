@@ -49,4 +49,4 @@ Suggested cron comment lines are printed after init. Fill in `AGENT_CMD` and unc
 - One task per worktree — never share mutable state between workers.
 - Workers must not modify files outside their task scope.
 - Reviews are always blind — no access to the worker's conversation context.
-- Fix cap is enforced by the caller (scheduler or human). The fix agent does not self-report exhaustion.
+- Fix cap is enforced by the caller (scheduler or human). The fix agent may also report `FIX_EXHAUSTED` when it reaches its own budget limit.
