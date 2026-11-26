@@ -229,6 +229,10 @@ function cmdInstallUbuntu(flags) {
 }
 
 function cmdInstallSystemd(flags) {
+  if (flags.workspace === true) {
+    console.error("Error: --workspace requires a path argument");
+    process.exit(1);
+  }
   const stateDir = getDefaultStateDir();
   const config = loadConfig(stateDir);
   const workspace = flags.workspace || config.workspace || process.cwd();
@@ -249,13 +253,24 @@ function cmdInstallSystemd(flags) {
   }
 
   console.log(`✓ Wrote systemd user service: ${res.servicePath}\n`);
-  console.log("To enable OpenClaw to survive reboots and SSH disconnects, run:");
-  for (const cmd of res.lingerInstructions) {
-    console.log(`  $ ${cmd}`);
+
+  if (enable && res.enableResult) {
+    if (res.enableResult.reloaded) console.log("✓ systemctl --user daemon-reload succeeded");
+    if (res.enableResult.enabled) console.log("✓ systemctl --user enable openclaw-sub succeeded");
+    for (const err of res.enableResult.errors) {
+      console.error(`✗ ${err}`);
+    }
   }
-  console.log(
-    "\n💡 loginctl enable-linger ensures your systemd --user services start at boot without a login session."
-  );
+
+  if (!enable || (res.enableResult && res.enableResult.errors.length > 0)) {
+    console.log("To enable OpenClaw to survive reboots and SSH disconnects, run:");
+    for (const cmd of res.lingerInstructions) {
+      console.log(`  $ ${cmd}`);
+    }
+    console.log(
+      "\n💡 loginctl enable-linger ensures your systemd --user services start at boot without a login session."
+    );
+  }
 }
 
 function cmdInstallSkill(flags) {
