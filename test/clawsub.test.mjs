@@ -922,3 +922,42 @@ test("docs/BENCHMARKS.md exists and contains required sections and workload numb
   assert.ok(content.includes("clawsub savings"), "Must include clawsub savings reproduction command");
   assert.ok(content.includes("clawsub doctor"), "Must include clawsub doctor reproduction command");
 });
+
+test("BENCHMARKS.md documented costs and token totals are consistent with computeSavings on the baseline fixture", () => {
+  // Baseline fixture as documented in BENCHMARKS.md step 4 — chars split proportionally
+  // so they sum to the 30-day baseline (1,338,000 input / 672,000 output tokens)
+  const stats = {
+    providers: {
+      claude: { turnCount: 2000, promptChars: 3964000, responseChars: 1992000 },
+      codex:  { turnCount: 500,  promptChars: 991000,  responseChars: 498000  },
+      agy:    { turnCount: 200,  promptChars: 397000,  responseChars: 198000  },
+    },
+    firstRecordedAt: new Date(Date.now() - 30 * 86400000).toISOString(),
+    lastRecordedAt:  new Date().toISOString(),
+  };
+  const result = computeSavings(stats);
+
+  // Token totals must match the documented baseline
+  const totalInput  = result.byProvider.reduce((s, p) => s + p.inputTokens,  0);
+  const totalOutput = result.byProvider.reduce((s, p) => s + p.outputTokens, 0);
+  assert.equal(totalInput,  1_338_000, "Total input tokens must equal baseline (1,338,000)");
+  assert.equal(totalOutput,   672_000, "Total output tokens must equal baseline (672,000)");
+  assert.equal(result.turnsTracked, 2700, "Total turns must be 2,700");
+
+  // Savings over 30 days must be ~$55.20 (sum of per-provider avoided API spend)
+  assert.ok(
+    result.totalSavedUsd > 55 && result.totalSavedUsd < 56,
+    `totalSavedUsd (${result.totalSavedUsd}) should be ~$55.20`
+  );
+
+  // 30-day API equivalent (all turns on claude): 1,338,000 × $15/M + 672,000 × $75/M = $70.47
+  const claudeApiEquiv = (1_338_000 / 1_000_000) * 15 + (672_000 / 1_000_000) * 75;
+  assert.ok(Math.abs(claudeApiEquiv - 70.47) < 0.01, `Claude-only API equiv must be ~$70.47 (got ${claudeApiEquiv})`);
+});
+
+test("README.md links to docs/BENCHMARKS.md", () => {
+  const readmePath = new URL("../README.md", import.meta.url).pathname;
+  assert.ok(fs.existsSync(readmePath), "README.md must exist");
+  const content = fs.readFileSync(readmePath, "utf8");
+  assert.ok(content.includes("docs/BENCHMARKS.md"), "README.md must link to docs/BENCHMARKS.md");
+});

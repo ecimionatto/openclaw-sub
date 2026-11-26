@@ -54,21 +54,21 @@ returns an error (and keeps charging if retried).
 
 One subscription CLI wired directly — `$0` extra API bill, but:
 
-- **Uptime** ≈ 54 % of a 24-hour period before the 5-hour rolling cap is exhausted
-  (2,700 turns / 30 days ÷ 24 hrs = ~3.75 turns/hr; a 5-hour window holds ~18 turns,
-  then the bot goes offline until the window resets — often hours later)
+- **Uptime**: Each subscription CLI has a rolling 5-hour usage window; once the cap is
+  reached the bot goes offline until the window resets — from minutes to hours later,
+  depending on when in the window the cap was hit.
 - **Recovery time** after quota hit: manual human intervention required (minutes → hours)
-- **Overnight drain**: 48 heartbeats / 24 hours = all 5-hour quota windows can be consumed
-  before your morning standup, leaving zero turns for daytime use
+- **Overnight drain**: if heartbeats are not paused, overnight polling can drain the
+  quota window before your morning standup, leaving zero turns for daytime use.
 
 ### Setup C: `clawsub` multi-subscription failover
 
 | Metric | Value |
 | :--- | :--- |
 | Extra monthly API bill | **$0** (uses existing subscriptions) |
-| Failover latency on quota hit | **0 ms** (detected in-turn, next provider used immediately) |
-| Uptime across 2 providers | **~95 %** (30-day model; both providers in quota ≤ 5 % of time) |
-| Uptime across 3 providers | **>99 %** (independent 5-hour windows rarely overlap) |
+| Failover latency on quota hit | **Automatic, same-turn** (quota error detected in-turn; next provider used immediately — no manual wait) |
+| Uptime across 2 providers | **~95 %** (qualitative estimate; both providers simultaneously quota-exhausted ~5% of the time) |
+| Uptime across 3 providers | **>99 %** (qualitative estimate; independent 5-hour windows rarely overlap simultaneously) |
 | Overnight heartbeat drain | **Paused** during quiet/reservation windows; resumes on first active turn |
 | Session continuity on failover | **Preserved** via Cross-Model Session Pass-Down Baton (`src/baton.mjs`) |
 
@@ -81,14 +81,14 @@ One subscription CLI wired directly — `$0` extra API bill, but:
 | Raw API Keys | Budget exhausted | Add credit / raise limit | Minutes (human action required) |
 | Naive Single CLI | 5-hour quota hit | Wait for window reset | 0 min – 5 hrs (depends on window) |
 | Naive Single CLI | Weekly quota hit | Wait for weekly reset | 0 – 7 days |
-| **`clawsub`** | Primary quota hit | Auto-failover to next provider | **0 ms** (same turn) |
+| **`clawsub`** | Primary quota hit | Auto-failover to next provider | **Automatic, same-turn** |
 | **`clawsub`** | All providers in quota | Heartbeats paused; exact reset time logged | Resumes at earliest provider reset |
 
 ### Scenario walk-through: 2 AM quota exhaustion
 
 ```
 02:14  claude CLI hits 5-hour rolling cap → clawsub detects quota error
-02:14  codex CLI activated (0 ms failover) → turn completes
+02:14  codex CLI activated (automatic same-turn failover) → turn completes
 02:14  baton.mjs writes session context to ~/.openclaw/baton.json (codex inherits claude's state)
 06:50  claude window resets → clawsub re-probes claude → primary restored automatically
 ```
@@ -111,45 +111,51 @@ clawsub savings
 # 3. Full diagnostic: provider chain health, openclaw.json validity, session baton state
 clawsub doctor --json
 
-# 4. Simulate a 30-day workload and compute projected monthly savings
-#    (populate a test state file first, then run savings)
-node -e "
-  import('./src/savings.mjs').then(({ computeSavings, PROVIDER_PRICING }) => {
-    const stats = {
+# 4. Reproduce the documented baseline numbers
+#    Run from the repository root directory.
+export BENCH_HOME=$(mktemp -d) && mkdir -p "$BENCH_HOME/.openclaw"
+
+# Write a 30-day fixture (baseline workload split across providers by turn count)
+node --input-type=module --eval "
+  import fs from 'node:fs';
+  const state = {
+    providers: {},
+    savings: {
       providers: {
-        claude:  { turnCount: 2000, promptChars: 5352000, responseChars: 2688000 },
-        codex:   { turnCount: 500,  promptChars: 669000,  responseChars: 336000  },
-        agy:     { turnCount: 200,  promptChars: 267600,  responseChars: 134400  },
+        claude: { turnCount: 2000, promptChars: 3964000, responseChars: 1992000 },
+        codex:  { turnCount: 500,  promptChars: 991000,  responseChars: 498000  },
+        agy:    { turnCount: 200,  promptChars: 397000,  responseChars: 198000  },
       },
       firstRecordedAt: new Date(Date.now() - 30 * 86400000).toISOString(),
-      lastRecordedAt: new Date().toISOString(),
-    };
-    const result = computeSavings(stats);
-    console.log(JSON.stringify(result, null, 2));
-  });
+      lastRecordedAt:  new Date().toISOString(),
+    },
+  };
+  fs.writeFileSync(process.env.BENCH_HOME + '/.openclaw/clawsub-state.json', JSON.stringify(state));
 "
+
+# Run savings against the fixture
+HOME="$BENCH_HOME" node ./bin/clawsub.mjs savings
 
 # 5. Check installed versions of clawsub, OpenClaw, and all subscription CLIs
 clawsub version
 ```
 
-### Expected `clawsub savings` output (baseline workload, claude primary)
+### Expected `clawsub savings` output (baseline workload, 2000/500/200 split)
 
 ```
 🦞 clawsub savings (v0.3.0)
 
 Tracked window:  30.0 days  |  2,700 turns
 
-Provider          Turns   Input tokens   Output tokens   Saved (est.)
-─────────────────────────────────────────────────────────────────────
-Claude Opus API   1,440      288,000        144,000        $15.12
-OpenAI GPT API      810      216,000        108,000         $2.27
-Gemini API          450      108,000         54,000         $0.41
-─────────────────────────────────────────────────────────────────────
-Total             2,700      612,000        306,000        $17.80/mo
+Provider               Turns   Input tokens   Output tokens   Saved (est.)
+──────────────────────────────────────────────────────────────────────────
+Claude Opus API (est.) 2,000      991,000        498,000        $52.2150
+OpenAI GPT/Codex API     500      247,750        124,500         $2.6108
+Gemini API               200       99,250         49,500         $0.3716
+──────────────────────────────────────────────────────────────────────────
+Total                  2,700    1,338,000        672,000        $55.20/mo
 
 30-day API equivalent (if all turns on claude primary):  ~$70.47
-Monthly savings vs. raw API keys:                        ~$52.67
 ```
 
 > Actual numbers depend on your subscription mix and turn sizes.
@@ -162,5 +168,6 @@ Monthly savings vs. raw API keys:                        ~$52.67
 - Token estimates use `CHARS_PER_TOKEN = 4` (the constant in `src/savings.mjs`).
 - Claude pricing uses Opus rates as a conservative upper bound; actual model may be cheaper.
 - The 5-hour window model assumes uniform turn distribution; burst usage drains quota faster.
-- Uptime percentages are modeled, not measured — actual uptime depends on your subscription tier
-  and usage pattern. Use `clawsub status --json` to observe real-world cooldown behavior.
+- Uptime percentages are qualitative estimates, not measured — actual uptime depends on your
+  subscription tier and usage pattern. Use `clawsub status --json` to observe real-world
+  cooldown behavior.
