@@ -21,6 +21,7 @@ import {
   runDoctor,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { getPluginInfo, parseJSONL } from "../src/plugin.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -423,6 +424,45 @@ test("inspectOpenClawJson expands ~ paths before checking existence", () => {
     !res.issues.some((i) => /does not exist/.test(i) && i.includes("~/.local/agy-cli")),
     "~ path that resolves to existing file should not be flagged as missing"
   );
+});
+
+test("openclaw.plugin.json has required fields, valid entry path, and provides agy-cli", () => {
+  const manifestPath = new URL("../openclaw.plugin.json", import.meta.url).pathname;
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.equal(typeof manifest.name, "string", "name must be a string");
+  assert.equal(typeof manifest.version, "string", "version must be a string");
+  assert.equal(typeof manifest.entry, "string", "entry must be a string");
+  assert.ok(Array.isArray(manifest.provides), "provides must be an array");
+  assert.ok(manifest.provides.includes("agy-cli"), "must provide agy-cli backend");
+  const entryPath = new URL(manifest.entry, new URL("../openclaw.plugin.json", import.meta.url))
+    .pathname;
+  assert.equal(fs.existsSync(entryPath), true, "entry file must exist on disk");
+});
+
+test("parseJSONL parses JSONL CLI output: mixed JSON lines and plain text", () => {
+  const input = [
+    '{"type":"result","output":"Hello world"}',
+    "Some plain text line",
+    '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
+    "",
+    '{"type":"tool_use","name":"bash"}',
+  ].join("\n");
+
+  const lines = parseJSONL(input);
+  assert.equal(lines.length, 4); // empty line is filtered
+  assert.deepEqual(lines[0], { type: "result", output: "Hello world" });
+  assert.deepEqual(lines[1], { raw: "Some plain text line" });
+  assert.deepEqual(lines[2], { type: "result", error: "usage_limit_reached: resets 6:50pm" });
+  assert.deepEqual(lines[3], { type: "tool_use", name: "bash" });
+});
+
+test("getPluginInfo returns agy-cli backend with plugin flag", () => {
+  const info = getPluginInfo();
+  assert.equal(info.name, "openclaw-sub");
+  assert.ok(Array.isArray(info.provides));
+  assert.ok(info.provides.includes("agy-cli"));
+  assert.equal(info.backend.plugin, true);
+  assert.equal(typeof info.backend.buildCommand, "function");
 });
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {

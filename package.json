@@ -9,7 +9,11 @@
   },
   "main": "./src/index.mjs",
   "exports": {
-    ".": "./src/index.mjs"
+    ".": "./src/index.mjs",
+    "./plugin": "./src/plugin.mjs"
+  },
+  "openclaw": {
+    "pluginManifest": "./openclaw.plugin.json"
   },
   "files": [
     "bin/",
@@ -19,7 +23,8 @@
     "docs/",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "openclaw.plugin.json"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",

@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-sub",
+  "version": "0.3.0",
+  "description": "Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemini, Ollama) with $0 extra API bills and automatic 0ms quota failover.",
+  "entry": "./src/plugin.mjs",
+  "provides": ["agy-cli"],
+  "keywords": ["openclaw-skill", "subscription", "failover", "agy-cli", "gemini"],
+  "homepage": "https://github.com/ecimionatto/openclaw-sub#readme",
+  "repository": "https://github.com/ecimionatto/openclaw-sub.git"
+}
