@@ -1,0 +1,36 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  docker-e2e:
+    name: Docker e2e (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run e2e in Docker
+        run: |
+          docker build -f test/e2e/Dockerfile -t clawsub-e2e .
+          docker run --rm clawsub-e2e
+
+  native-e2e:
+    name: Native e2e (${{ matrix.os }} / node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Make stubs executable
+        run: chmod +x test/e2e/stubs/claude test/e2e/stubs/codex test/e2e/stubs/agy test/e2e/run.sh
+      - name: Run e2e
+        run: bash test/e2e/run.sh

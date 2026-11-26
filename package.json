@@ -17,12 +17,14 @@
     "skills/",
     "scripts/",
     "docs/",
+    "test/e2e/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "test:e2e": "bash test/e2e/run.sh",
     "status": "node ./bin/clawsub.mjs status",
     "doctor": "node ./bin/clawsub.mjs doctor",
     "version-check": "node ./bin/clawsub.mjs version"
