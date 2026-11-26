@@ -10,6 +10,7 @@ COPY . /app/
 RUN chmod +x /app/test/e2e/stubs/claude \
               /app/test/e2e/stubs/codex \
               /app/test/e2e/stubs/agy \
+              /app/test/e2e/stubs/openclaw \
               /app/test/e2e/run.sh
 
 ENV REPO_ROOT=/app
