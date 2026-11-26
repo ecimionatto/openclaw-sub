@@ -212,7 +212,7 @@ test("findActiveTimeWindow handles daytime and overnight windows", () => {
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00Z")),
     "23:00-08:00"
   );
   assert.equal(
@@ -269,7 +269,7 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
-  const t1 = new Date("2026-11-25T16:00:00-05:00");
+  const t1 = new Date("2026-11-25T10:00:00-05:00");
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
