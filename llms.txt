@@ -1,0 +1,47 @@
+# openclaw-sub (clawsub) — Agent Discovery Summary
+
+## What it does
+Runs OpenClaw 24/7 on flat-rate AI subscriptions (Claude Pro/Max, ChatGPT Plus/Pro, Google AI)
+with $0 extra API bills and automatic 0ms quota failover between CLIs.
+
+## Install
+```
+npx openclaw-sub@latest init
+```
+Or one-line Ubuntu bootstrapper (22.04 / 24.04):
+```
+curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/bootstrap-ubuntu.sh | bash
+```
+
+## Key CLI commands
+```
+clawsub init             # initialize config and optionally install OpenClaw + CLIs
+clawsub install-ubuntu   # bootstrap OpenClaw + subscription CLIs on Ubuntu
+clawsub status           # show provider cooldown states
+clawsub doctor           # diagnose auth and CLI availability
+clawsub version          # print installed versions
+clawsub run <prompt>     # route a single prompt through the failover chain
+clawsub baton            # inspect the cross-model session baton
+```
+
+## Architecture (failover chain)
+User → OpenClaw Gateway → clawsub Cooldown Router
+  → claude CLI  (Claude Pro/Max — primary)
+  → codex CLI   (ChatGPT Plus/Pro — fallback #1)
+  → agy/gemini  (Google AI — fallback #2)
+  → ollama      (local hardware — optional offline fallback)
+
+When a provider hits its 5-hour or weekly quota limit, clawsub records the exact reset time
+and skips that provider with 0ms overhead on every subsequent turn until the cooldown expires.
+
+## Cross-model session baton
+When failover occurs, clawsub prepends missed turns in `[Turn #N via provider]` format to the
+next prompt so the incoming model has full context. The baton is stored at
+`$HOME/.openclaw/clawsub-baton.json` and keyed by session. If a provider ran out of credits
+mid-turn, the partial output and modified files are recorded so the fallback can resume.
+
+## Zero external dependencies
+Node.js >= 18 built-ins only. `npx openclaw-sub` executes instantly with no install step.
+
+## Repository
+https://github.com/ecimionatto/openclaw-sub
