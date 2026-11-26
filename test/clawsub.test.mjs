@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   CLAWSUB_VERSION,
   computeCooldownUntil,
+  computeSavings,
   findActiveTimeWindow,
   generateOpenClawIntegration,
   getInstalledVersions,
@@ -16,6 +17,8 @@ import {
   isHeartbeatPrompt,
   isQuotaError,
   parseResetTime,
+  PROVIDER_PRICING,
+  recordTurnSavings,
   recordVersionSnapshot,
   routePrompt,
   runDoctor,
@@ -531,4 +534,122 @@ test("shared session baton passes context across models on credit exhaustion AND
   assert.match(claudeRecoveryPrompt.prompt, /CLAWSUB SHARED SESSION BATON — HANDOFF TO CLAUDE/);
   assert.match(claudeRecoveryPrompt.prompt, /\[Turn #2 via codex\]/);
   assert.match(claudeRecoveryPrompt.prompt, /Finished step 2 in src\/state\.mjs and added unit tests/);
+});
+
+// ── savings ─────────────────────────────────────────────────────────────────
+
+test("PROVIDER_PRICING has correct rates for claude, codex, agy, gemini", () => {
+  assert.equal(PROVIDER_PRICING.claude.inputPerM, 15);
+  assert.equal(PROVIDER_PRICING.claude.outputPerM, 75);
+  assert.equal(PROVIDER_PRICING.codex.inputPerM, 3);
+  assert.equal(PROVIDER_PRICING.codex.outputPerM, 15);
+  assert.equal(PROVIDER_PRICING.agy.inputPerM, 1.25);
+  assert.equal(PROVIDER_PRICING.agy.outputPerM, 5);
+  assert.equal(PROVIDER_PRICING.gemini.inputPerM, 1.25);
+  assert.equal(PROVIDER_PRICING.gemini.outputPerM, 5);
+  assert.equal(PROVIDER_PRICING.ollama.inputPerM, 0);
+});
+
+test("computeSavings returns zeros for empty stats", () => {
+  const result = computeSavings({ providers: {}, firstRecordedAt: null, lastRecordedAt: null });
+  assert.equal(result.totalSavedUsd, 0);
+  assert.equal(result.turnsTracked, 0);
+  assert.deepEqual(result.byProvider, []);
+  assert.equal(result.monthlyProjectionUsd, 0);
+});
+
+test("computeSavings handles null/undefined input gracefully", () => {
+  const result = computeSavings(null);
+  assert.equal(result.totalSavedUsd, 0);
+  assert.equal(result.turnsTracked, 0);
+});
+
+test("computeSavings computes correct savings for claude (Opus pricing)", () => {
+  // 4000 promptChars = 1000 input tokens; 8000 responseChars = 2000 output tokens
+  // savings = (1000/1M)*15 + (2000/1M)*75 = 0.000015 + 0.00015 = 0.000165
+  const stats = {
+    providers: { claude: { turnCount: 1, promptChars: 4000, responseChars: 8000 } },
+    firstRecordedAt: "2026-11-01T00:00:00Z",
+    lastRecordedAt: "2026-11-01T00:00:00Z",
+  };
+  const result = computeSavings(stats);
+  assert.equal(result.turnsTracked, 1);
+  assert.equal(result.byProvider.length, 1);
+  assert.equal(result.byProvider[0].provider, "claude");
+  assert.equal(result.byProvider[0].inputTokens, 1000);
+  assert.equal(result.byProvider[0].outputTokens, 2000);
+  assert.ok(result.totalSavedUsd > 0, "totalSavedUsd should be positive");
+  const expected = (1000 / 1_000_000) * 15 + (2000 / 1_000_000) * 75;
+  assert.ok(Math.abs(result.totalSavedUsd - expected) < 0.000001);
+});
+
+test("computeSavings computes monthly projection from tracked days", () => {
+  const stats = {
+    providers: { codex: { turnCount: 10, promptChars: 40000, responseChars: 80000 } },
+    firstRecordedAt: "2026-11-01T00:00:00Z",
+    lastRecordedAt: "2026-11-11T00:00:00Z", // 10 days
+  };
+  const result = computeSavings(stats);
+  assert.ok(result.daysTracked >= 9.9 && result.daysTracked <= 10.1, "daysTracked ~10");
+  assert.ok(result.monthlyProjectionUsd > 0, "monthlyProjectionUsd should be positive");
+  assert.ok(
+    Math.abs(result.monthlyProjectionUsd - result.dailyAvgUsd * 30) < 0.01,
+    "monthly = daily * 30"
+  );
+});
+
+test("computeSavings sums across multiple providers", () => {
+  const stats = {
+    providers: {
+      claude: { turnCount: 5, promptChars: 20000, responseChars: 40000 },
+      agy: { turnCount: 3, promptChars: 12000, responseChars: 24000 },
+    },
+    firstRecordedAt: "2026-11-01T00:00:00Z",
+    lastRecordedAt: "2026-11-02T00:00:00Z",
+  };
+  const result = computeSavings(stats);
+  assert.equal(result.turnsTracked, 8);
+  assert.equal(result.byProvider.length, 2);
+  const claudeSaved = result.byProvider.find((p) => p.provider === "claude").savedUsd;
+  const agySaved = result.byProvider.find((p) => p.provider === "agy").savedUsd;
+  assert.ok(claudeSaved > agySaved, "claude (Opus) saves more per token than agy (Gemini)");
+  assert.ok(Math.abs(result.totalSavedUsd - (claudeSaved + agySaved)) < 0.0001);
+});
+
+test("recordTurnSavings accumulates stats across multiple calls", () => {
+  const state = { providers: {}, savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null } };
+  const t0 = new Date("2026-11-01T10:00:00Z");
+  const t1 = new Date("2026-11-02T10:00:00Z");
+  recordTurnSavings(state, "claude", { promptChars: 100, responseChars: 200, now: t0 });
+  recordTurnSavings(state, "claude", { promptChars: 50, responseChars: 100, now: t1 });
+  recordTurnSavings(state, "codex", { promptChars: 80, responseChars: 160, now: t1 });
+
+  assert.equal(state.savings.providers.claude.turnCount, 2);
+  assert.equal(state.savings.providers.claude.promptChars, 150);
+  assert.equal(state.savings.providers.claude.responseChars, 300);
+  assert.equal(state.savings.providers.codex.turnCount, 1);
+  assert.equal(state.savings.firstRecordedAt, t0.toISOString());
+  assert.equal(state.savings.lastRecordedAt, t1.toISOString());
+});
+
+test("recordTurnSavings initializes savings on state without it", () => {
+  const state = { providers: {} };
+  recordTurnSavings(state, "agy", { promptChars: 400, responseChars: 800, now: new Date() });
+  assert.ok(state.savings);
+  assert.equal(state.savings.providers.agy.turnCount, 1);
+});
+
+test("routePrompt records savings stats on successful turn", () => {
+  const state = { providers: {} };
+  routePrompt("hello world", {
+    config: { chain: ["claude"], enableSessionBaton: false },
+    state,
+    batonStore: { sessions: {} },
+    runner: () => ({ exitCode: 0, stdout: "hi there", stderr: "", latencyMs: 10 }),
+  });
+  assert.ok(state.savings, "savings should be populated after successful turn");
+  assert.ok(state.savings.providers.claude, "claude entry should exist");
+  assert.equal(state.savings.providers.claude.turnCount, 1);
+  assert.ok(state.savings.providers.claude.promptChars > 0);
+  assert.ok(state.savings.providers.claude.responseChars > 0);
 });

@@ -49,10 +49,38 @@ export function loadState(stateDir = getDefaultStateDir()) {
       providers: raw.providers || {},
       lastActiveProvider: raw.lastActiveProvider || null,
       updatedAt: raw.updatedAt || null,
+      savings: raw.savings || { providers: {}, firstRecordedAt: null, lastRecordedAt: null },
     };
   } catch {
-    return { providers: {}, lastActiveProvider: null, updatedAt: null };
+    return {
+      providers: {},
+      lastActiveProvider: null,
+      updatedAt: null,
+      savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null },
+    };
   }
+}
+
+/**
+ * Records prompt/response character counts for a successful turn, used for cost savings estimation.
+ * @param {object} state
+ * @param {string} providerId
+ * @param {{ promptChars: number, responseChars: number, now?: Date }} opts
+ */
+export function recordTurnSavings(state, providerId, { promptChars, responseChars, now = new Date() } = {}) {
+  if (!state.savings) {
+    state.savings = { providers: {}, firstRecordedAt: null, lastRecordedAt: null };
+  }
+  const s = state.savings;
+  if (!s.firstRecordedAt) s.firstRecordedAt = now.toISOString();
+  s.lastRecordedAt = now.toISOString();
+  if (!s.providers[providerId]) {
+    s.providers[providerId] = { turnCount: 0, promptChars: 0, responseChars: 0 };
+  }
+  const p = s.providers[providerId];
+  p.turnCount += 1;
+  p.promptChars += promptChars || 0;
+  p.responseChars += responseChars || 0;
 }
 
 export function saveState(state, stateDir = getDefaultStateDir()) {

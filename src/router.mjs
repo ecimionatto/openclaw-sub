@@ -12,6 +12,7 @@ import {
   getProviderCooldown,
   loadConfig,
   loadState,
+  recordTurnSavings,
   saveState,
 } from "./state.mjs";
 
@@ -206,6 +207,12 @@ export function routePrompt(prompt, opts = {}) {
         saveBatonStore(batonStore, stateDir);
       }
     }
+
+    recordTurnSavings(state, providerId, {
+      promptChars: baton.prompt.length,
+      responseChars: (result.stdout || "").length,
+      now,
+    });
 
     attempts.push({
       provider: providerId,
