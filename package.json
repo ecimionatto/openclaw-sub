@@ -17,6 +17,9 @@
     "skills/",
     "scripts/",
     "docs/",
+    ".well-known/",
+    "llms.txt",
+    "llms-full.txt",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

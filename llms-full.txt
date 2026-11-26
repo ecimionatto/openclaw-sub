@@ -1,0 +1,189 @@
+# openclaw-sub (clawsub) — Full Agent Reference
+
+## Overview
+`openclaw-sub` (`clawsub`) is an open-source CLI, Ubuntu bootstrapper, OpenClaw plugin, and
+agent skill that lets users run OpenClaw 24/7 on flat-rate AI subscriptions with $0 extra
+API bills and automatic 0ms quota failover.
+
+Supported providers: claude (Claude Pro/Max), codex (ChatGPT Plus/Pro), agy/gemini (Google AI),
+ollama (local hardware)
+
+Repository: https://github.com/ecimionatto/openclaw-sub
+License: MIT
+Node.js: >= 18 (zero external runtime dependencies)
+
+---
+
+## Installation
+
+### npx (any platform)
+```
+npx openclaw-sub@latest init
+```
+
+### Ubuntu 22.04 / 24.04 bootstrapper
+```
+curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/bootstrap-ubuntu.sh | bash
+```
+Installs: system deps, Node.js 22+ LTS, OpenClaw, subscription CLIs, clawsub shims, SKILL.md.
+
+### Version-pinned install
+```
+npx openclaw-sub@latest init --openclaw-version 2026.11.0 --chain claude,codex
+```
+
+---
+
+## Full CLI Reference
+
+### clawsub init [options]
+Initialize clawsub config and optionally install OpenClaw and subscription CLIs.
+  --chain <list>             comma-separated provider chain (default: claude,codex,agy)
+  --workspace <path>         target workspace directory (default: current directory)
+  --openclaw-version <ver>   pin OpenClaw to a specific version (default: latest)
+  --install-openclaw         install/update OpenClaw
+  --install-skill            install SKILL.md into workspace
+  --probe                    test-invoke each provider after setup
+  --dry-run                  print commands without executing
+
+### clawsub install-ubuntu [options]
+Bootstrap OpenClaw and subscription CLIs on Ubuntu 22.04/24.04.
+  --openclaw-version <ver>   pin OpenClaw to a specific version (default: latest)
+  --chain <list>             comma-separated provider chain (default: claude,codex,agy)
+  --dry-run                  print commands without executing
+
+### clawsub status [--json]
+Show cooldown state for all configured providers.
+Output: provider name, status (healthy|cooldown), cooldownUntil (ISO 8601).
+
+### clawsub doctor [--json]
+Diagnose auth and CLI availability for all providers.
+Checks: CLI binary on PATH, auth token validity, test invocation.
+
+### clawsub version [--json]
+Print clawsub version and installed provider CLI versions.
+
+### clawsub run [--session <key>] <prompt>
+Route a single prompt through the failover chain and print the result.
+
+### clawsub exec <provider> [--session <key>] [--] <prompt>
+Run a prompt directly on a specific provider, bypassing the failover chain.
+
+### clawsub baton [--session <key>] [--clear] [--json]
+Inspect or clear the cross-model session baton for a session key.
+
+### clawsub reset [provider]
+Clear cooldown state for a provider (or all providers if omitted).
+
+### clawsub install-skill [--workspace <path>]
+Install the clawsub SKILL.md into the workspace for agent auto-discovery.
+Writes to: <workspace>/skills/clawsub/SKILL.md and <workspace>/.agents/skills/clawsub/SKILL.md
+
+---
+
+## openclaw.json Config Schema
+
+```json
+{
+  "chain": ["claude", "codex", "agy"],
+  "workspace": "/home/user/openclaw-workspace",
+  "defaultCooldownMinutes": 60,
+  "cooldownBufferMinutes": 5,
+  "quietWindows": ["23:00-08:00"],
+  "quotaReservationWindows": ["06:30-08:45"]
+}
+```
+
+### Field reference
+| Field | Type | Default | Description |
+|---|---|---|---|
+| chain | string[] | ["claude","codex","agy"] | Ordered failover chain of provider CLI names |
+| workspace | string | (current directory) | Base directory for OpenClaw files |
+| defaultCooldownMinutes | number | 60 | Cooldown duration when no reset time is parseable |
+| cooldownBufferMinutes | number | 5 | Extra buffer added after parsed reset time |
+| quietWindows | string[] | ["23:00-08:00"] | Time ranges (HH:MM-HH:MM) to suppress heartbeats |
+| quotaReservationWindows | string[] | ["06:30-08:45","19:00-21:30"] | Time ranges to skip non-urgent heartbeats |
+| pauseHeartbeatsWhenAllCoolingDown | boolean | true | Pause heartbeats when every provider is cooling down |
+
+---
+
+## Quota Error Detection
+
+clawsub recognizes quota exhaustion from all supported CLIs:
+- Claude: `usage_limit_reached: resets HH:MMam/pm`, `5-hour limit`, `weekly limit`
+- Codex: `HTTP 429 Too Many Requests`
+- Gemini/agy: `GoogleGenerativeAIError: ResourceExhausted`
+
+On detection: records exact reset time, adds buffer, marks provider as cooling-down.
+On subsequent turns: 0ms skip (no subprocess spawn).
+
+---
+
+## Cross-Model Session Baton (src/baton.mjs)
+
+When a provider hits its quota limit mid-session, clawsub writes a baton file at
+`$CLAWSUB_HOME/clawsub-baton.json` (default: `$HOME/.openclaw/clawsub-baton.json`):
+```json
+{
+  "sessions": {
+    "main": {
+      "sessionKey": "main",
+      "turnCounter": 2,
+      "lastProvider": "codex",
+      "providerNativeSessions": {},
+      "lastSeenTurnByProvider": { "claude": 1, "codex": 2 },
+      "pendingMidTurnHandoff": null,
+      "turns": [
+        {
+          "turnId": 1,
+          "timestamp": "2026-11-25T16:00:00Z",
+          "provider": "claude",
+          "prompt": "...",
+          "response": "..."
+        }
+      ]
+    }
+  },
+  "updatedAt": "2026-11-25T16:30:00Z"
+}
+```
+The next provider receives delta turns it hasn't seen in `[Turn #N via provider]` format
+prepended to the prompt, so it can continue without amnesia.
+If the previous provider ran out of credits mid-turn, `pendingMidTurnHandoff` records the
+partial output and modified files so the fallback model can resume the interrupted task.
+
+---
+
+## Troubleshooting
+
+### "All providers are cooling down"
+clawsub prints the earliest reset time. Wait, or add an `ollama` local fallback.
+
+### "CLI not found on PATH"
+Run `clawsub doctor` to identify which CLIs are missing, then `clawsub init` to fix.
+
+### "Auth token expired"
+Re-authenticate with the provider CLI:
+- claude: `claude login`
+- codex: `codex login`
+- agy/gemini: `agy auth login` or `gemini login`
+
+### Heartbeats draining quota overnight
+Add a `quietWindows` entry in `openclaw.json`:
+```json
+{ "quietWindows": ["23:00-08:00"] }
+```
+
+### Session amnesia after failover
+The baton is always active. Check baton files at
+`$HOME/.openclaw/clawsub-baton.json` (or `$CLAWSUB_HOME/clawsub-baton.json`).
+
+---
+
+## Agent Skill
+
+Install the SKILL.md so Claude Code / Codex / other agents auto-discover clawsub:
+```
+clawsub install-skill --workspace /path/to/workspace
+```
+Or manually copy `skills/clawsub/SKILL.md` to your workspace's `.agents/skills/clawsub/`.

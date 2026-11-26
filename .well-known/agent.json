@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "name": "openclaw-sub",
+  "display_name": "openclaw-sub (clawsub)",
+  "description": "Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude Pro/Max, ChatGPT Plus/Pro, Google AI) with $0 extra API bills and automatic 0ms quota failover between CLIs.",
+  "version": "0.3.0",
+  "homepage": "https://github.com/ecimionatto/openclaw-sub",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ecimionatto/openclaw-sub.git"
+  },
+  "license": "MIT",
+  "install": {
+    "npx": "npx openclaw-sub@latest init",
+    "ubuntu_bootstrapper": "curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/bootstrap-ubuntu.sh | bash"
+  },
+  "skill_path": "skills/clawsub/SKILL.md",
+  "agent_skill_paths": [
+    "skills/clawsub/SKILL.md",
+    ".agents/skills/clawsub/SKILL.md"
+  ],
+  "discovery": {
+    "llms_txt": "llms.txt",
+    "llms_full_txt": "llms-full.txt"
+  },
+  "capabilities": [
+    "quota-failover",
+    "cross-model-session-baton",
+    "ubuntu-bootstrapper",
+    "version-pinning",
+    "quiet-windows",
+    "quota-reservation-windows",
+    "agent-skill"
+  ],
+  "providers": [
+    {
+      "id": "claude",
+      "description": "Claude Pro/Max via Claude Code CLI",
+      "cli": "claude"
+    },
+    {
+      "id": "codex",
+      "description": "ChatGPT Plus/Pro via OpenAI Codex CLI",
+      "cli": "codex"
+    },
+    {
+      "id": "agy",
+      "description": "Google AI via Antigravity/Gemini CLI",
+      "cli": "agy"
+    },
+    {
+      "id": "ollama",
+      "description": "Local hardware via Ollama CLI (optional offline fallback)",
+      "cli": "ollama"
+    }
+  ],
+  "runtime": {
+    "platform": "node",
+    "min_version": "18.0.0",
+    "external_dependencies": 0
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-skill",
+    "ubuntu",
+    "claude-code",
+    "codex",
+    "antigravity",
+    "gemini-cli",
+    "ai-agent",
+    "subscription",
+    "failover"
+  ]
+}

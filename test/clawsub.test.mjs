@@ -975,3 +975,38 @@ test("README.md links to docs/BENCHMARKS.md", () => {
   const content = fs.readFileSync(readmePath, "utf8");
   assert.ok(content.includes("docs/BENCHMARKS.md"), "README.md must link to docs/BENCHMARKS.md");
 });
+
+test("agent discovery manifests exist and are well-formed", () => {
+  const root = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+
+  const llmsTxt = path.join(root, "llms.txt");
+  assert.equal(fs.existsSync(llmsTxt), true, "llms.txt must exist");
+  const llmsTxtContent = fs.readFileSync(llmsTxt, "utf8");
+  assert.ok(llmsTxtContent.includes("openclaw-sub"), "llms.txt must mention openclaw-sub");
+  assert.ok(llmsTxtContent.includes("npx"), "llms.txt must include install command");
+
+  const llmsFullTxt = path.join(root, "llms-full.txt");
+  assert.equal(fs.existsSync(llmsFullTxt), true, "llms-full.txt must exist");
+  const llmsFullContent = fs.readFileSync(llmsFullTxt, "utf8");
+  assert.ok(llmsFullContent.includes("openclaw.json"), "llms-full.txt must include config schema");
+  assert.ok(llmsFullContent.includes("Troubleshooting"), "llms-full.txt must include troubleshooting section");
+
+  const agentJson = path.join(root, ".well-known", "agent.json");
+  assert.equal(fs.existsSync(agentJson), true, ".well-known/agent.json must exist");
+  const agentData = JSON.parse(fs.readFileSync(agentJson, "utf8"));
+  assert.equal(typeof agentData.name, "string", "agent.json must have name");
+  assert.equal(typeof agentData.install, "object", "agent.json must have install");
+  assert.equal(typeof agentData.install.npx, "string", "agent.json install.npx must be a string");
+  assert.ok(Array.isArray(agentData.capabilities), "agent.json must have capabilities array");
+  assert.ok(Array.isArray(agentData.providers), "agent.json must have providers array");
+  assert.equal(typeof agentData.skill_path, "string", "agent.json must have skill_path");
+  assert.ok(agentData.repository && agentData.repository.url, "agent.json must have repository.url");
+
+  assert.equal(fs.existsSync(path.join(root, agentData.skill_path)), true, "agent.json skill_path must exist on disk");
+
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.equal(agentData.version, pkgJson.version, "agent.json version must match package.json");
+  assert.ok(pkgJson.files.includes(".well-known/"), "package.json files must include .well-known/");
+  assert.ok(pkgJson.files.includes("llms.txt"), "package.json files must include llms.txt");
+  assert.ok(pkgJson.files.includes("llms-full.txt"), "package.json files must include llms-full.txt");
+});
