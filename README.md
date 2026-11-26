@@ -6,6 +6,7 @@
 [![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-purple.svg)](CHANGELOG.md)
 [![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](package.json)
+[![Benchmarks](https://img.shields.io/badge/benchmarks-30--day%20cost%20model-orange.svg)](docs/BENCHMARKS.md)
 
 ---
 
@@ -30,6 +31,8 @@ If you just point a 24/7 agent at a subscription CLI out of the box, four things
 ---
 
 ## Cost & Reliability Comparison
+
+> See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for a full 30-day workload model, per-provider cost breakdown, failure recovery timelines, and copy-pasteable reproduction commands.
 
 | Setup | Extra Monthly API Bill | When Primary Hits 5h/Weekly Limit | Overnight Heartbeat Drain |
 | :--- | :--- | :--- | :--- |

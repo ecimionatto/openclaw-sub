@@ -6,7 +6,7 @@ with $0 extra API bills and automatic 0ms quota failover between CLIs.
 
 ## Install
 ```
-npx openclaw-sub@latest install
+npx openclaw-sub@latest init
 ```
 Or one-line Ubuntu bootstrapper (22.04 / 24.04):
 ```

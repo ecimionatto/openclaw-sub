@@ -160,7 +160,7 @@ partial output and modified files so the fallback model can resume the interrupt
 clawsub prints the earliest reset time. Wait, or add an `ollama` local fallback.
 
 ### "CLI not found on PATH"
-Run `clawsub doctor` to identify which CLIs are missing, then `clawsub install` to fix.
+Run `clawsub doctor` to identify which CLIs are missing, then `clawsub init` to fix.
 
 ### "Auth token expired"
 Re-authenticate with the provider CLI:

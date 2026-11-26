@@ -11,7 +11,7 @@
   },
   "license": "MIT",
   "install": {
-    "npx": "npx openclaw-sub@latest install",
+    "npx": "npx openclaw-sub@latest init",
     "ubuntu_bootstrapper": "curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/bootstrap-ubuntu.sh | bash"
   },
   "skill_path": "skills/clawsub/SKILL.md",

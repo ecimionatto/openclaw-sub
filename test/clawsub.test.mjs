@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   CLAWSUB_VERSION,
   computeCooldownUntil,
+  computeSavings,
   findActiveTimeWindow,
   generateOpenClawIntegration,
   getInstalledVersions,
@@ -16,10 +18,17 @@ import {
   installSkill,
   isHeartbeatPrompt,
   isQuotaError,
+  loadState,
   parseResetTime,
+  PROVIDER_PRICING,
+  recordTurnSavings,
   recordVersionSnapshot,
   routePrompt,
+  runDoctor,
+  saveState,
 } from "../src/index.mjs";
+import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -174,7 +183,7 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
   // Outside quiet window, when all providers are in cooldown:
   // - Heartbeat returns NO_REPLY
   // - Direct user message returns earliest reset notice
-  const afternoon = new Date("2026-11-25T15:00:00-05:00");
+  const afternoon = new Date(2026, 10, 25, 15, 0);
   state.providers = {
     claude: {
       status: "cooldown",
@@ -209,7 +218,7 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
 
 test("findActiveTimeWindow handles daytime and overnight windows", () => {
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date(2026, 10, 25, 23, 30)),
     "23:00-08:00"
   );
   assert.equal(
@@ -217,7 +226,7 @@ test("findActiveTimeWindow handles daytime and overnight windows", () => {
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date(2026, 10, 25, 14, 0)),
     null
   );
 });
@@ -268,9 +277,307 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
   ]);
 });
 
+test("runDoctor reports no openclaw.json issues when config is valid and headless-safe", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-valid-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  const agyCli = path.join(tmpDir, "agy-cli");
+  fs.writeFileSync(agyCli, "#!/bin/sh\necho agy", { mode: 0o755 });
+
+  const oc = {
+    plugins: {
+      entries: {
+        anthropic: { config: { sessionCatalog: { enabled: false } } },
+        codex: { config: { sessionCatalog: { enabled: false } } },
+      },
+      load: { paths: [agyCli] },
+    },
+  };
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.equal(
+    report.openclawJson.issues.length,
+    0,
+    `Expected no openclaw.json issues but got: ${report.openclawJson.issues.join("; ")}`
+  );
+});
+
+test("runDoctor detects misconfigured openclaw.json and emits exact remediation commands", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-bad-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+
+  const oc = {
+    plugins: {
+      entries: {
+        anthropic: { config: { sessionCatalog: { enabled: true } } },
+        codex: { config: { sessionCatalog: { enabled: true } } },
+      },
+      load: { paths: ["/nonexistent/path/to/agy"] },
+    },
+  };
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+
+  assert.ok(
+    report.openclawJson.issues.some((i) => /anthropic/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for anthropic"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /codex/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for codex"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) =>
+      /plugins\.entries\.anthropic.*sessionCatalog/.test(r)
+    ),
+    "Expected anthropic remediation command referencing correct JSON path"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) =>
+      /plugins\.entries\.codex.*sessionCatalog/.test(r)
+    ),
+    "Expected codex remediation command referencing correct JSON path"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /plugins\.load\.paths/.test(i) && /does not exist/.test(i)),
+    "Expected missing plugins.load.paths issue"
+  );
+  assert.ok(
+    report.issues.some((i) => /anthropic/.test(i)),
+    "Top-level issues should include openclaw.json issues"
+  );
+});
+
+test("runDoctor skips openclaw.json checks gracefully when file is absent", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-absent-"));
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.equal(report.openclawJson, null, "openclawJson should be null when file missing");
+});
+
+test("runDoctor reports an issue for malformed openclaw.json (not silently skipped)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-malformed-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), "{ invalid json !!!");
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.issues.some((i) => /openclaw\.json/.test(i) && /parse/.test(i)),
+    "Expected a parse error issue for malformed openclaw.json"
+  );
+  assert.notEqual(report.openclawJson, null, "openclawJson should not be null for malformed file");
+});
+
+test("runDoctor flags provider with omitted plugins.entries entry as sessionCatalog not explicitly disabled", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-omit-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify({ plugins: { entries: {} } }));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.openclawJson.issues.some((i) => /anthropic/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for omitted anthropic entry"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /codex/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for omitted codex entry"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) => r === "openclaw models auth login --provider anthropic --force"),
+    "Expected exact --force command for anthropic"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) => r === "openclaw models auth login --provider codex --force"),
+    "Expected exact --force command for codex"
+  );
+});
+
+test("inspectOpenClawJson reports missing agy-cli plugin path when absent from load.paths", () => {
+  const withoutAgy = { plugins: { load: { paths: ["/some/other/plugin"] } } };
+  const res1 = inspectOpenClawJson(withoutAgy);
+  assert.ok(
+    res1.issues.some((i) => /agy-cli/.test(i)),
+    "Expected agy-cli issue when no agy-cli entry in load.paths"
+  );
+
+  const withNoLoadPaths = { plugins: { entries: {} } };
+  const res2 = inspectOpenClawJson(withNoLoadPaths);
+  assert.ok(
+    res2.issues.some((i) => /agy-cli/.test(i)),
+    "Expected agy-cli issue when load.paths is absent entirely"
+  );
+
+  const withAgyCli = { plugins: { load: { paths: ["/usr/local/lib/agy-cli/entry.js"] } } };
+  const res3 = inspectOpenClawJson(withAgyCli);
+  assert.ok(
+    !res3.issues.some((i) => i === "openclaw.json: plugins.load.paths does not include an agy-cli plugin path."),
+    "No missing-agy-cli issue when load.paths includes an agy-cli entry (may still report missing-file)"
+  );
+});
+
+test("generateSystemdService produces a valid unit file with Restart=on-failure and PATH", () => {
+  const result = generateSystemdService({ workspace: "/home/user/myproject", nodeBinDir: "/usr/local/bin" });
+  assert.ok(typeof result.content === "string", "content must be a string");
+  assert.match(result.content, /Restart=on-failure/);
+  assert.match(result.content, /WantedBy=default\.target/);
+  assert.match(result.content, /WorkingDirectory=\/home\/user\/myproject/);
+  assert.match(result.content, /PATH=\/usr\/local\/bin:/);
+  assert.match(result.content, /ExecStart=\/usr\/bin\/env openclaw gateway$/m);
+  assert.equal(result.serviceName, "openclaw-sub");
+  assert.match(result.suggestedPath, /openclaw-sub\.service$/);
+});
+
+test("generateSystemdService resolves relative workspace path to absolute", () => {
+  const result = generateSystemdService({ workspace: "./myrelproject", nodeBinDir: "/usr/local/bin" });
+  const lines = result.content.split("\n");
+  const wdLine = lines.find((l) => l.startsWith("WorkingDirectory="));
+  assert.ok(wdLine, "WorkingDirectory line must exist");
+  assert.ok(path.isAbsolute(wdLine.replace("WorkingDirectory=", "")), "WorkingDirectory must be absolute");
+});
+
+test("generateSystemdService escapes percent signs and spaces in paths", () => {
+  const result = generateSystemdService({
+    workspace: "/home/user/my project%test",
+    nodeBinDir: "/usr/local/bin",
+  });
+  assert.match(result.content, /WorkingDirectory=.*my project/, "literal space must be preserved in WorkingDirectory");
+  assert.match(result.content, /WorkingDirectory=.*%%test/, "percent must be doubled to %%");
+  assert.doesNotMatch(result.content, /WorkingDirectory=.*\\x20/, "\\x20 must not appear in WorkingDirectory");
+});
+
+test("generateSystemdService escapes percent signs and spaces in nodeBinDir for Environment=PATH", () => {
+  const result = generateSystemdService({
+    workspace: "/home/user/project",
+    nodeBinDir: "/home/user/my node%bin",
+  });
+  assert.match(result.content, /Environment=.*\\x20/, "space in nodeBinDir must become \\x20 in Environment=");
+  assert.match(result.content, /Environment=.*%%bin/, "percent in nodeBinDir must be doubled to %%");
+});
+
+test("install-systemd --enable exits 1 when systemctl fails", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-exit1-"));
+  const fakeSystemctl = path.join(tmpDir, "systemctl");
+  fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--enable", `--workspace=${tmpDir}`],
+    { env: { ...process.env, HOME: tmpDir, PATH: `${tmpDir}:${process.env.PATH}` }, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 1, "exit code must be 1 when daemon-reload or enable fails");
+});
+
+test("installSystemdService with enable=true calls systemctl daemon-reload and enable, not on dry-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-enable-"));
+  const called = [];
+  const fakeRunner = (cmd) => { called.push(cmd); };
+
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    enable: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(called.includes("systemctl --user daemon-reload"), "must call daemon-reload");
+  assert.ok(called.includes("systemctl --user enable openclaw-sub"), "must call enable");
+  assert.equal(result.enableResult.reloaded, true);
+  assert.equal(result.enableResult.enabled, true);
+  assert.deepEqual(result.enableResult.errors, []);
+
+  called.length = 0;
+  const dryResult = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    enable: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+  });
+  assert.equal(dryResult.dryRun, true);
+  assert.equal(called.length, 0, "dry-run must not call runner even with --enable");
+});
+
+test("installSystemdService with enable=true reports runner failures in enableResult.errors", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-fail-"));
+  const failRunner = (cmd) => { throw new Error(`${cmd}: mock failure`); };
+
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    enable: true,
+    homeDir: tmpDir,
+    runner: failRunner,
+  });
+
+  assert.equal(result.ok, true, "file was written, so ok should be true");
+  assert.equal(result.enableResult.reloaded, false);
+  assert.equal(result.enableResult.enabled, false);
+  assert.equal(result.enableResult.errors.length, 2);
+  assert.match(result.enableResult.errors[0], /daemon-reload failed/);
+  assert.match(result.enableResult.errors[1], /enable openclaw-sub failed/);
+});
+
+test("installSystemdService dry-run returns content and instructions without writing", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-"));
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    homeDir: tmpDir,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, true);
+  assert.match(result.content, /Restart=on-failure/);
+  assert.ok(Array.isArray(result.lingerInstructions));
+  assert.ok(result.lingerInstructions.some((l) => /loginctl enable-linger/.test(l)));
+  assert.ok(result.lingerInstructions.some((l) => /systemctl --user enable openclaw-sub/.test(l)));
+  assert.equal(fs.existsSync(result.servicePath), false, "dry-run must not write the file");
+});
+
+test("installSystemdService writes service file to correct path when not dry-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-write-"));
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    homeDir: tmpDir,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, false);
+  assert.equal(fs.existsSync(result.servicePath), true, "service file must be written");
+  const written = fs.readFileSync(result.servicePath, "utf8");
+  assert.match(written, /Restart=on-failure/);
+  assert.match(written, /WantedBy=default\.target/);
+});
+
+test("inspectOpenClawJson expands ~ paths before checking existence", () => {
+  const expandedDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
+  const expandedPlugin = path.join(expandedDir, ".local", "agy-cli", "plugin.js");
+  fs.mkdirSync(path.dirname(expandedPlugin), { recursive: true });
+  fs.writeFileSync(expandedPlugin, "");
+
+  const cfg = { plugins: { load: { paths: ["~/.local/agy-cli/plugin.js"] } } };
+  const res = inspectOpenClawJson(cfg, { homeDir: expandedDir });
+  assert.ok(
+    !res.issues.some((i) => /does not exist/.test(i) && i.includes("~/.local/agy-cli")),
+    "~ path that resolves to existing file should not be flagged as missing"
+  );
+});
+
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
-  const t1 = new Date(2026, 10, 25, 10, 0);
+  const t1 = new Date(2026, 10, 25, 16, 0);
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -347,7 +654,7 @@ test("shared session baton passes context across models on credit exhaustion AND
   // Turn 3 (after 7:00pm when claude's 5h credit window resets):
   // claude comes back online and receives Turn 2 completed by codex so claude has ZERO split-brain amnesia!
   receivedPrompts.length = 0;
-  const afterReset = new Date("2026-11-25T19:05:00-05:00");
+  const afterReset = new Date(2026, 10, 25, 19, 5);
   const res3 = routePrompt("Now add the CLI status command", {
     stateDir: tmpDir,
     config,
@@ -374,6 +681,299 @@ test("shared session baton passes context across models on credit exhaustion AND
   assert.match(claudeRecoveryPrompt.prompt, /CLAWSUB SHARED SESSION BATON — HANDOFF TO CLAUDE/);
   assert.match(claudeRecoveryPrompt.prompt, /\[Turn #2 via codex\]/);
   assert.match(claudeRecoveryPrompt.prompt, /Finished step 2 in src\/state\.mjs and added unit tests/);
+});
+
+// ── savings ─────────────────────────────────────────────────────────────────
+
+test("PROVIDER_PRICING has correct rates for claude, codex, agy, gemini", () => {
+  assert.equal(PROVIDER_PRICING.claude.inputPerM, 15);
+  assert.equal(PROVIDER_PRICING.claude.outputPerM, 75);
+  assert.equal(PROVIDER_PRICING.codex.inputPerM, 3);
+  assert.equal(PROVIDER_PRICING.codex.outputPerM, 15);
+  assert.equal(PROVIDER_PRICING.agy.inputPerM, 1.25);
+  assert.equal(PROVIDER_PRICING.agy.outputPerM, 5);
+  assert.equal(PROVIDER_PRICING.gemini.inputPerM, 1.25);
+  assert.equal(PROVIDER_PRICING.gemini.outputPerM, 5);
+  assert.equal(PROVIDER_PRICING.ollama.inputPerM, 0);
+});
+
+test("computeSavings returns zeros for empty stats", () => {
+  const result = computeSavings({ providers: {}, firstRecordedAt: null, lastRecordedAt: null });
+  assert.equal(result.totalSavedUsd, 0);
+  assert.equal(result.turnsTracked, 0);
+  assert.deepEqual(result.byProvider, []);
+  assert.equal(result.monthlyProjectionUsd, 0);
+});
+
+test("computeSavings handles null/undefined input gracefully", () => {
+  const result = computeSavings(null);
+  assert.equal(result.totalSavedUsd, 0);
+  assert.equal(result.turnsTracked, 0);
+});
+
+test("computeSavings computes correct savings for claude (Opus pricing)", () => {
+  // 4000 promptChars = 1000 input tokens; 8000 responseChars = 2000 output tokens
+  // savings = (1000/1M)*15 + (2000/1M)*75 = 0.015 + 0.15 = 0.165
+  const stats = {
+    providers: { claude: { turnCount: 1, promptChars: 4000, responseChars: 8000 } },
+    firstRecordedAt: "2026-11-01T00:00:00Z",
+    lastRecordedAt: "2026-11-01T00:00:00Z",
+  };
+  const result = computeSavings(stats, { now: new Date("2026-11-01T00:00:00Z") });
+  assert.equal(result.turnsTracked, 1);
+  assert.equal(result.byProvider.length, 1);
+  assert.equal(result.byProvider[0].provider, "claude");
+  assert.equal(result.byProvider[0].inputTokens, 1000);
+  assert.equal(result.byProvider[0].outputTokens, 2000);
+  assert.ok(result.totalSavedUsd > 0, "totalSavedUsd should be positive");
+  const expected = (1000 / 1_000_000) * 15 + (2000 / 1_000_000) * 75;
+  assert.ok(Math.abs(result.totalSavedUsd - expected) < 0.000001);
+});
+
+test("computeSavings computes monthly projection from tracked days", () => {
+  const stats = {
+    providers: { codex: { turnCount: 10, promptChars: 40000, responseChars: 80000 } },
+    firstRecordedAt: "2026-11-01T00:00:00Z",
+    lastRecordedAt: "2026-11-11T00:00:00Z",
+  };
+  const result = computeSavings(stats, { now: new Date("2026-11-11T00:00:00Z") });
+  assert.ok(result.daysTracked >= 9.9 && result.daysTracked <= 10.1, "daysTracked ~10");
+  assert.ok(result.monthlyProjectionUsd > 0, "monthlyProjectionUsd should be positive");
+  assert.ok(
+    Math.abs(result.monthlyProjectionUsd - result.dailyAvgUsd * 30) < 0.01,
+    "monthly = daily * 30"
+  );
+});
+
+test("computeSavings sums across multiple providers", () => {
+  const stats = {
+    providers: {
+      claude: { turnCount: 5, promptChars: 20000, responseChars: 40000 },
+      agy: { turnCount: 3, promptChars: 12000, responseChars: 24000 },
+    },
+    firstRecordedAt: "2026-11-01T00:00:00Z",
+    lastRecordedAt: "2026-11-02T00:00:00Z",
+  };
+  const result = computeSavings(stats, { now: new Date("2026-11-02T00:00:00Z") });
+  assert.equal(result.turnsTracked, 8);
+  assert.equal(result.byProvider.length, 2);
+  const claudeSaved = result.byProvider.find((p) => p.provider === "claude").savedUsd;
+  const agySaved = result.byProvider.find((p) => p.provider === "agy").savedUsd;
+  assert.ok(claudeSaved > agySaved, "claude (Opus) saves more per token than agy (Gemini)");
+  assert.ok(Math.abs(result.totalSavedUsd - (claudeSaved + agySaved)) < 0.0001);
+});
+
+test("recordTurnSavings accumulates stats across multiple calls", () => {
+  const state = { providers: {}, savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null } };
+  const t0 = new Date("2026-11-01T10:00:00Z");
+  const t1 = new Date("2026-11-02T10:00:00Z");
+  recordTurnSavings(state, "claude", { promptChars: 100, responseChars: 200, now: t0 });
+  recordTurnSavings(state, "claude", { promptChars: 50, responseChars: 100, now: t1 });
+  recordTurnSavings(state, "codex", { promptChars: 80, responseChars: 160, now: t1 });
+
+  assert.equal(state.savings.providers.claude.turnCount, 2);
+  assert.equal(state.savings.providers.claude.promptChars, 150);
+  assert.equal(state.savings.providers.claude.responseChars, 300);
+  assert.equal(state.savings.providers.codex.turnCount, 1);
+  assert.equal(state.savings.firstRecordedAt, t0.toISOString());
+  assert.equal(state.savings.lastRecordedAt, t1.toISOString());
+});
+
+test("recordTurnSavings initializes savings on state without it", () => {
+  const state = { providers: {} };
+  recordTurnSavings(state, "agy", { promptChars: 400, responseChars: 800, now: new Date() });
+  assert.ok(state.savings);
+  assert.equal(state.savings.providers.agy.turnCount, 1);
+});
+
+test("routePrompt records savings stats on successful turn", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-savings-route-"));
+  const state = { providers: {} };
+  routePrompt("hello world", {
+    stateDir: tmpDir,
+    config: { chain: ["claude"], enableSessionBaton: false },
+    state,
+    batonStore: { sessions: {} },
+    runner: () => ({ exitCode: 0, stdout: "hi there", stderr: "", latencyMs: 10 }),
+  });
+  assert.ok(state.savings, "savings should be populated after successful turn");
+  assert.ok(state.savings.providers.claude, "claude entry should exist");
+  assert.equal(state.savings.providers.claude.turnCount, 1);
+  assert.ok(state.savings.providers.claude.promptChars > 0);
+  assert.ok(state.savings.providers.claude.responseChars > 0);
+  // Confirm the injected state was NOT persisted to the user's real default state directory
+  const defaultDir = path.join(os.homedir(), ".openclaw");
+  if (fs.existsSync(path.join(defaultDir, "clawsub-state.json"))) {
+    const persisted = JSON.parse(fs.readFileSync(path.join(defaultDir, "clawsub-state.json"), "utf8"));
+    assert.ok(
+      !persisted.savings || persisted.savings.providers?.claude?.turnCount !== 1 ||
+        persisted.savings.firstRecordedAt !== state.savings.firstRecordedAt,
+      "injected in-memory state must not leak to real default stateDir"
+    );
+  }
+});
+
+test("computeSavings projects conservatively when idle time follows the last turn", () => {
+  // 1 day of heavy use then 29 idle days — projection should be much less than 30x daily use
+  const firstRecordedAt = "2026-11-01T00:00:00Z";
+  const stats = {
+    providers: { claude: { turnCount: 100, promptChars: 400_000, responseChars: 800_000 } },
+    firstRecordedAt,
+    lastRecordedAt: "2026-11-01T12:00:00Z",
+  };
+  const now30DaysLater = new Date("2026-11-30T00:00:00Z");
+  const result = computeSavings(stats, { now: now30DaysLater });
+  assert.ok(result.daysTracked >= 28.9, "daysTracked should include idle days after last turn");
+  // The projection must be far less than 30x what a 1-day window would show
+  const inflatedResult = computeSavings(stats, { now: new Date("2026-11-01T12:00:00Z") });
+  assert.ok(
+    result.monthlyProjectionUsd < inflatedResult.monthlyProjectionUsd / 10,
+    "idle trailing days must deflate the monthly projection"
+  );
+});
+
+test("saveState/loadState round-trip preserves savings and handles legacy state with no savings field", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-state-rt-"));
+
+  // Round-trip with savings populated
+  const state = {
+    providers: {},
+    savings: {
+      providers: { claude: { turnCount: 7, promptChars: 28000, responseChars: 56000 } },
+      firstRecordedAt: "2026-11-01T00:00:00Z",
+      lastRecordedAt: "2026-11-05T00:00:00Z",
+    },
+  };
+  saveState(state, tmpDir);
+  const loaded = loadState(tmpDir);
+  assert.equal(loaded.savings.providers.claude.turnCount, 7);
+  assert.equal(loaded.savings.providers.claude.promptChars, 28000);
+  assert.equal(loaded.savings.firstRecordedAt, "2026-11-01T00:00:00Z");
+
+  // Legacy state file with no savings field must load with an empty savings object
+  const legacyPath = path.join(tmpDir, "clawsub-state.json");
+  fs.writeFileSync(legacyPath, JSON.stringify({ providers: {}, lastActiveProvider: "claude" }));
+  const legacy = loadState(tmpDir);
+  assert.ok(legacy.savings, "loadState must synthesize savings for legacy files");
+  assert.deepEqual(legacy.savings.providers, {});
+  assert.equal(legacy.savings.firstRecordedAt, null);
+});
+
+test("cmdSavings CLI command outputs savings for both empty and populated state dirs", () => {
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+
+  // Empty state dir
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-sv-empty-"));
+  const emptyResult = spawnSync(
+    process.execPath,
+    [binPath, "savings", "--json"],
+    { env: { ...process.env, HOME: emptyDir }, encoding: "utf8" }
+  );
+  assert.equal(emptyResult.status, 0, `savings --json failed: ${emptyResult.stderr}`);
+  const emptyJson = JSON.parse(emptyResult.stdout);
+  assert.equal(emptyJson.turnsTracked, 0);
+  assert.equal(emptyJson.totalSavedUsd, 0);
+
+  // Populated state dir
+  const populatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-sv-pop-"));
+  const stateDirPath = path.join(populatedDir, ".openclaw");
+  fs.mkdirSync(stateDirPath, { recursive: true });
+  const popState = {
+    providers: {},
+    savings: {
+      providers: { codex: { turnCount: 5, promptChars: 20000, responseChars: 40000 } },
+      firstRecordedAt: "2026-11-01T00:00:00Z",
+      lastRecordedAt: "2026-11-05T00:00:00Z",
+    },
+  };
+  fs.writeFileSync(path.join(stateDirPath, "clawsub-state.json"), JSON.stringify(popState));
+  const popResult = spawnSync(
+    process.execPath,
+    [binPath, "savings", "--json"],
+    { env: { ...process.env, HOME: populatedDir }, encoding: "utf8" }
+  );
+  assert.equal(popResult.status, 0, `savings --json failed: ${popResult.stderr}`);
+  const popJson = JSON.parse(popResult.stdout);
+  assert.equal(popJson.turnsTracked, 5);
+  assert.ok(popJson.totalSavedUsd > 0, "totalSavedUsd should be positive for codex turns");
+});
+
+test("docs/BENCHMARKS.md exists and contains required sections and workload numbers", () => {
+  const benchPath = fileURLToPath(new URL("../docs/BENCHMARKS.md", import.meta.url));
+  assert.ok(fs.existsSync(benchPath), "docs/BENCHMARKS.md must exist");
+
+  const content = fs.readFileSync(benchPath, "utf8");
+
+  const requiredHeadings = [
+    "30-Day Workload Model",
+    "Cost Comparison",
+    "Failure Recovery",
+    "Reproduction Commands",
+  ];
+  for (const heading of requiredHeadings) {
+    assert.ok(content.includes(heading), `docs/BENCHMARKS.md must contain section: ${heading}`);
+  }
+
+  // Workload numbers from acceptance criteria
+  assert.ok(content.includes("1,440"), "Must document 1,440 heartbeats/month (48/day × 30)");
+  assert.ok(content.includes("1,200"), "Must document 1,200 chat turns/month (40/day × 30)");
+  assert.ok(content.includes("2,700"), "Must document 2,700 total turns/month");
+
+  // Reproduction commands present
+  assert.ok(content.includes("clawsub savings"), "Must include clawsub savings reproduction command");
+  assert.ok(content.includes("clawsub doctor"), "Must include clawsub doctor reproduction command");
+});
+
+test("BENCHMARKS.md documented costs and token totals are consistent with computeSavings on the baseline fixture", () => {
+  // Baseline fixture as documented in BENCHMARKS.md step 4 — chars split proportionally
+  // so they sum to the 30-day baseline (1,338,000 input / 672,000 output tokens)
+  const stats = {
+    providers: {
+      claude: { turnCount: 2000, promptChars: 3964000, responseChars: 1992000 },
+      codex:  { turnCount: 500,  promptChars: 991000,  responseChars: 498000  },
+      agy:    { turnCount: 200,  promptChars: 397000,  responseChars: 198000  },
+    },
+    firstRecordedAt: new Date(Date.now() - 30 * 86400000).toISOString(),
+    lastRecordedAt:  new Date().toISOString(),
+  };
+  const result = computeSavings(stats);
+
+  // Token totals must match the documented baseline
+  const totalInput  = result.byProvider.reduce((s, p) => s + p.inputTokens,  0);
+  const totalOutput = result.byProvider.reduce((s, p) => s + p.outputTokens, 0);
+  assert.equal(totalInput,  1_338_000, "Total input tokens must equal baseline (1,338,000)");
+  assert.equal(totalOutput,   672_000, "Total output tokens must equal baseline (672,000)");
+  assert.equal(result.turnsTracked, 2700, "Total turns must be 2,700");
+
+  // Savings over 30 days must be ~$55.20 (sum of per-provider avoided API spend)
+  assert.ok(
+    result.totalSavedUsd > 55 && result.totalSavedUsd < 56,
+    `totalSavedUsd (${result.totalSavedUsd}) should be ~$55.20`
+  );
+
+  // 30-day API equivalent (all turns on claude): derived from PROVIDER_PRICING constants
+  const claudeApiEquiv =
+    (totalInput  / 1_000_000) * PROVIDER_PRICING.claude.inputPerM +
+    (totalOutput / 1_000_000) * PROVIDER_PRICING.claude.outputPerM;
+  assert.ok(Math.abs(claudeApiEquiv - 70.47) < 0.01, `Claude-only API equiv must be ~$70.47 (got ${claudeApiEquiv})`);
+
+  // Verify BENCHMARKS.md contains the computed cost figures
+  const benchPath = fileURLToPath(new URL("../docs/BENCHMARKS.md", import.meta.url));
+  const benchContent = fs.readFileSync(benchPath, "utf8");
+  assert.ok(benchContent.includes("$70.47"), "BENCHMARKS.md must document Claude API equivalent ~$70.47");
+  assert.ok(benchContent.includes("$14.09"), "BENCHMARKS.md must document Codex API cost ~$14.09");
+  assert.ok(benchContent.includes("$5.03"),  "BENCHMARKS.md must document Gemini API cost ~$5.03");
+  assert.ok(benchContent.includes("$55.20"), "BENCHMARKS.md must document total monthly savings ~$55.20");
+  assert.ok(benchContent.includes("52.2150"), "BENCHMARKS.md must include Claude per-provider savings $52.2150");
+  assert.ok(benchContent.includes("2.6108"),  "BENCHMARKS.md must include Codex per-provider savings $2.6108");
+  assert.ok(benchContent.includes("0.3716"),  "BENCHMARKS.md must include Gemini per-provider savings $0.3716");
+});
+
+test("README.md links to docs/BENCHMARKS.md", () => {
+  const readmePath = fileURLToPath(new URL("../README.md", import.meta.url));
+  assert.ok(fs.existsSync(readmePath), "README.md must exist");
+  const content = fs.readFileSync(readmePath, "utf8");
+  assert.ok(content.includes("docs/BENCHMARKS.md"), "README.md must link to docs/BENCHMARKS.md");
 });
 
 test("agent discovery manifests exist and are well-formed", () => {
