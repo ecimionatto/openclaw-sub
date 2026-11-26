@@ -279,7 +279,11 @@ export function evalMetrics({ logPath, boardPath, repo, json } = {}) {
   } else {
     const entries = Object.entries(metrics);
     if (entries.length === 0) {
-      console.log(repo ? `No events found for repo: ${repo}` : "No events found.");
+      if (repo) {
+        process.stderr.write(`warning: no events for repo ${repo}\n`);
+      } else {
+        console.log("No events found.");
+      }
       return;
     }
     for (const [r, m] of entries) {

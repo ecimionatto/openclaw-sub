@@ -18,6 +18,9 @@
     "scripts/",
     "docs/",
     "evals/",
+    ".well-known/",
+    "llms.txt",
+    "llms-full.txt",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

@@ -313,3 +313,29 @@ test("eval metrics CLI human-readable text output and --board option work", () =
   assert.match(r.stdout, /First-pass APPROVE rate:\s+33\.3%/);
   assert.match(r.stdout, /Fix runs per merged PR:\s+0\.5/);
 });
+
+test("eval metrics --repo with no matching events warns on stderr and exits 0", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  const logFile = path.join(tmpDir, "log.txt");
+  fs.writeFileSync(logFile, "2026-01-01T00:00:00Z repo:org/exists task:T-1 spawned\n");
+  try {
+    const r = spawnSync("node", [BIN, "eval", "metrics", "--log", logFile, "--repo", "org/nonexistent"], { encoding: "utf8" });
+    assert.equal(r.status, 0, `expected exit 0; got ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, /warning.*no events for repo/i, `expected warning in stderr: ${JSON.stringify(r.stderr)}`);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true });
+  }
+});
+
+test("eval metrics --repo that matches events exits 0 with no warning", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  const logFile = path.join(tmpDir, "log.txt");
+  fs.writeFileSync(logFile, "2026-01-01T00:00:00Z repo:org/exists task:T-1 spawned\n");
+  try {
+    const r = spawnSync("node", [BIN, "eval", "metrics", "--log", logFile, "--repo", "org/exists"], { encoding: "utf8" });
+    assert.equal(r.status, 0);
+    assert.equal(r.stderr, "");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true });
+  }
+});
