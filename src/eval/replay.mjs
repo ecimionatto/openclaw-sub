@@ -7,7 +7,12 @@ const DEFAULT_TASKS_DIR = path.join(
   "../../evals/tasks"
 );
 
+const TASK_ID_RE = /^[\w-]+$/;
+
 export function loadTask(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
+  if (!TASK_ID_RE.test(taskId)) {
+    throw new Error(`Invalid task id: ${JSON.stringify(taskId)} — must match [\\w-]+`);
+  }
   const file = path.join(tasksDir, `${taskId}.json`);
   if (!fs.existsSync(file)) {
     throw new Error(`Task not found: ${taskId} (looked in ${tasksDir})`);
@@ -25,13 +30,21 @@ export function listTasks({ tasksDir = DEFAULT_TASKS_DIR } = {}) {
 
 export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
   const task = loadTask(taskId, { tasksDir });
+  const testFile = task.acceptanceTest ?? null;
+  const testCmd = testFile ? `node --test ${testFile}` : null;
   return {
     taskId: task.id,
     title: task.title,
     plan: [
       { step: 1, action: "spawn", detail: `Spawn worker for task ${task.id}: ${task.title}` },
       { step: 2, action: "prompt", detail: task.prompt },
-      { step: 3, action: "review", detail: "Run acceptance criteria checks (no model calls in dry-run)" },
+      {
+        step: 3,
+        action: "review",
+        detail: testFile
+          ? `Run hidden acceptance test: ${testFile}  (command: ${testCmd})`
+          : "Run acceptance criteria checks (no hidden test defined)",
+      },
       {
         step: 4,
         action: "verify",
@@ -41,6 +54,7 @@ export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
       { step: 5, action: "report", detail: "Emit pass/fail per criterion and overall result" },
     ],
     dryRun: true,
+    ...(testFile ? { acceptanceTestFile: testFile, acceptanceTestCmd: testCmd } : {}),
   };
 }
 

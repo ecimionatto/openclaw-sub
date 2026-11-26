@@ -100,7 +100,7 @@ export function computeMetrics(events, { repo } = {}) {
         hadFix > 0
           ? Math.round((fixedThenMerged / hadFix) * 1000) / 10
           : null,
-      rescapeRate:
+      rescopeRate:
         repoTasks.length > 0
           ? Math.round((rescopedCount / repoTasks.length) * 1000) / 10
           : null,
@@ -114,16 +114,26 @@ export function computeMetrics(events, { repo } = {}) {
 export function evalMetrics({ logPath, repo, json } = {}) {
   const text = fs.readFileSync(logPath, "utf8");
   const events = parseLog(text);
+  const nonBlankLines = text.split("\n").filter((l) => l.trim()).length;
+  const skippedLines = nonBlankLines - events.length;
+  if (events.length === 0 && nonBlankLines > 0) {
+    process.stderr.write(
+      `error: 0 events parsed from ${nonBlankLines} non-blank line(s) — verify format is: repo:<name> task:<id> <event>\n`
+    );
+    process.exit(1);
+  } else if (skippedLines > 0) {
+    process.stderr.write(`warning: ${skippedLines} line(s) did not match expected format and were skipped\n`);
+  }
   const metrics = computeMetrics(events, { repo });
   if (json) {
     console.log(JSON.stringify(metrics, null, 2));
   } else {
     for (const [r, m] of Object.entries(metrics)) {
       console.log(`\nRepo: ${r}  (${m.taskCount} tasks)`);
-      console.log(`  First-pass APPROVE rate:    ${m.firstPassApproveRate ?? "n/a"}%`);
+      console.log(`  First-pass APPROVE rate:    ${m.firstPassApproveRate != null ? m.firstPassApproveRate + "%" : "n/a"}`);
       console.log(`  Fix runs per merged PR:     ${m.fixRunsPerMergedPR ?? "n/a"}`);
-      console.log(`  Fix convergence rate:       ${m.fixConvergenceRate ?? "n/a"}%`);
-      console.log(`  Rescope rate:               ${m.rescapeRate ?? "n/a"}%`);
+      console.log(`  Fix convergence rate:       ${m.fixConvergenceRate != null ? m.fixConvergenceRate + "%" : "n/a"}`);
+      console.log(`  Rescope rate:               ${m.rescopeRate != null ? m.rescopeRate + "%" : "n/a"}`);
       console.log(
         `  Median time-to-merge:       ${m.medianTimeToMergeMinutes != null ? m.medianTimeToMergeMinutes + " min" : "n/a"}`
       );

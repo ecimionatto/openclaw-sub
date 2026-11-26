@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -6,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { computeMetrics, parseLog } from "../src/eval/metrics.mjs";
 import { listTasks, loadTask, replayDryRun } from "../src/eval/replay.mjs";
+
+const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "clawsub.mjs");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, "fixtures");
@@ -75,7 +78,7 @@ test("computeMetrics: fix convergence rate", () => {
 test("computeMetrics: rescope rate is 0 when no rescopes", () => {
   const events = parseLog(FIXTURE_LOG);
   const m = computeMetrics(events)["org/repo"];
-  assert.equal(m.rescapeRate, 0);
+  assert.equal(m.rescopeRate, 0);
 });
 
 test("computeMetrics: median time-to-merge", () => {
@@ -103,7 +106,23 @@ test("computeMetrics: rescope rate with rescoped task", () => {
 `;
   const events = parseLog(logWithRescope);
   const m = computeMetrics(events)["org/r"];
-  assert.equal(m.rescapeRate, 50);
+  assert.equal(m.rescopeRate, 50);
+});
+
+test("computeMetrics: fix convergence rate is below 100 when FIX task never merges", () => {
+  const logWithUnmergedFix = `\
+2026-11-26T10:00:00Z repo:org/r task:T-1 spawned
+2026-11-26T10:01:00Z repo:org/r task:T-1 reviewed -> FIX
+2026-11-26T10:02:00Z repo:org/r task:T-1 fix lint attempt 1
+2026-11-26T10:03:00Z repo:org/r task:T-1 reviewed -> APPROVE
+2026-11-26T10:05:00Z repo:org/r task:T-1 merged
+2026-11-26T11:00:00Z repo:org/r task:T-2 spawned
+2026-11-26T11:01:00Z repo:org/r task:T-2 reviewed -> FIX
+`;
+  const events = parseLog(logWithUnmergedFix);
+  const m = computeMetrics(events)["org/r"];
+  assert.ok(m.fixConvergenceRate < 100, `expected rate < 100 but got ${m.fixConvergenceRate}`);
+  assert.equal(m.fixConvergenceRate, 50);
 });
 
 test("computeMetrics: returns null metrics for empty task set", () => {
@@ -149,6 +168,51 @@ test("replayDryRun verify step lists all acceptance criteria", () => {
   const verifyStep = plan.plan.find((s) => s.action === "verify");
   const task = loadTask("task-01", { tasksDir: TASKS_DIR });
   assert.deepEqual(verifyStep.criteria, task.acceptanceCriteria);
+});
+
+test("replayDryRun plan step 3 names the hidden acceptance test file", () => {
+  const plan = replayDryRun("task-01", { tasksDir: TASKS_DIR });
+  const reviewStep = plan.plan.find((s) => s.action === "review");
+  assert.ok(reviewStep.detail.includes("evals/tests/task-01.test.mjs"), `expected test file in detail: ${reviewStep.detail}`);
+  assert.ok(plan.acceptanceTestFile, "expected acceptanceTestFile on plan");
+  assert.match(plan.acceptanceTestCmd, /node --test/);
+});
+
+test("loadTask rejects taskId with path traversal characters", () => {
+  assert.throws(
+    () => loadTask("../etc/passwd", { tasksDir: TASKS_DIR }),
+    /Invalid task id/
+  );
+});
+
+test("eval metrics CLI --log --json outputs valid JSON", () => {
+  const r = spawnSync("node", [BIN, "eval", "metrics", "--log", path.join(FIXTURES, "work-tick.txt"), "--json"], { encoding: "utf8" });
+  assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  const m = JSON.parse(r.stdout);
+  assert.ok("ecimionatto/openclaw-sub" in m);
+});
+
+test("eval metrics CLI missing --log exits 1", () => {
+  const r = spawnSync("node", [BIN, "eval", "metrics"], { encoding: "utf8" });
+  assert.equal(r.status, 1);
+});
+
+test("eval replay CLI --task --json outputs valid plan", () => {
+  const r = spawnSync("node", [BIN, "eval", "replay", "--task", "task-01", "--tasks-dir", TASKS_DIR, "--json"], { encoding: "utf8" });
+  assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+  const plan = JSON.parse(r.stdout);
+  assert.equal(plan.taskId, "task-01");
+  assert.equal(plan.dryRun, true);
+});
+
+test("eval replay CLI missing --task exits 1", () => {
+  const r = spawnSync("node", [BIN, "eval", "replay"], { encoding: "utf8" });
+  assert.equal(r.status, 1);
+});
+
+test("eval unknown subcommand exits 1", () => {
+  const r = spawnSync("node", [BIN, "eval", "bogus"], { encoding: "utf8" });
+  assert.equal(r.status, 1);
 });
 
 test("metrics fixture file parses correctly", () => {

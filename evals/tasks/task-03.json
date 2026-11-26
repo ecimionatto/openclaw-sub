@@ -7,5 +7,6 @@
     "parseLog returns no event for a line starting with '#'",
     "parseLog still returns correct events for valid lines interleaved with blanks and comments",
     "unit test covers all three cases"
-  ]
+  ],
+  "acceptanceTest": "evals/tests/task-03.test.mjs"
 }

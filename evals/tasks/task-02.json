@@ -7,5 +7,6 @@
     "clawsub status exits 1 when no providers are ready",
     "unit test covers both exit-code paths without spawning real CLIs",
     "no changes to the human-readable output format"
-  ]
+  ],
+  "acceptanceTest": "evals/tests/task-02.test.mjs"
 }

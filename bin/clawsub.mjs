@@ -43,7 +43,7 @@ Usage:
   clawsub doctor [--json]
   clawsub savings [--json]
   clawsub eval metrics --log <file> [--repo <repo>] [--json]
-  clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] --dry-run
+  clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] [--dry-run]
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
@@ -604,7 +604,7 @@ function main() {
     }
     if (evalSubcmd === "replay") {
       if (!flags.task) {
-        console.error("Usage: clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] --dry-run");
+        console.error("Usage: clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] [--dry-run]");
         process.exit(1);
       }
       evalReplay({ taskId: flags.task, tasksDir: flags["tasks-dir"], json: flags.json });
