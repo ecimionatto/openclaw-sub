@@ -31,7 +31,7 @@ test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini R
 });
 
 test("parseResetTime parses same-day, next-day, multi-day date, and relative durations", () => {
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date("2026-11-25T16:00:00Z");
 
   // 1. Same-day time in future ("resets 6:50pm")
   const sameDay = parseResetTime("hit your 5-hour limit, resets 6:50pm", now);
@@ -62,7 +62,7 @@ test("parseResetTime parses same-day, next-day, multi-day date, and relative dur
 });
 
 test("computeCooldownUntil adds safety buffer to parsed reset time or falls back to default", () => {
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date("2026-11-25T16:00:00Z");
   const withReset = computeCooldownUntil("resets 6:50pm", { now, bufferMinutes: 5 });
   assert.equal(withReset.getHours(), 18);
   assert.equal(withReset.getMinutes(), 55);
@@ -76,7 +76,7 @@ test("computeCooldownUntil adds safety buffer to parsed reset time or falls back
 
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
-  const now = new Date("2026-11-25T16:00:00-05:00");
+  const now = new Date("2026-11-25T16:00:00Z");
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -143,7 +143,7 @@ test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast
 
 test("routePrompt pauses heartbeats during quota reservation windows and when all CLIs are cooling down", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-hb-"));
-  const morningStandupWindow = new Date("2026-11-25T07:30:00-05:00");
+  const morningStandupWindow = new Date("2026-11-25T07:30:00Z");
   const config = {
     chain: ["claude", "codex"],
     workspace: tmpDir,
@@ -174,7 +174,7 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
   // Outside quiet window, when all providers are in cooldown:
   // - Heartbeat returns NO_REPLY
   // - Direct user message returns earliest reset notice
-  const afternoon = new Date("2026-11-25T15:00:00-05:00");
+  const afternoon = new Date("2026-11-25T15:00:00Z");
   state.providers = {
     claude: {
       status: "cooldown",
@@ -209,15 +209,15 @@ test("routePrompt pauses heartbeats during quota reservation windows and when al
 
 test("findActiveTimeWindow handles daytime and overnight windows", () => {
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T23:30:00Z")),
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00Z")),
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00-05:00")),
+    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T14:00:00Z")),
     null
   );
 });
@@ -346,7 +346,7 @@ test("runDoctor skips openclaw.json checks gracefully when file is absent", () =
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
-  const t1 = new Date("2026-11-25T16:00:00-05:00");
+  const t1 = new Date("2026-11-25T16:00:00Z");
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -423,7 +423,7 @@ test("shared session baton passes context across models on credit exhaustion AND
   // Turn 3 (after 7:00pm when claude's 5h credit window resets):
   // claude comes back online and receives Turn 2 completed by codex so claude has ZERO split-brain amnesia!
   receivedPrompts.length = 0;
-  const afterReset = new Date("2026-11-25T19:05:00-05:00");
+  const afterReset = new Date("2026-11-25T19:05:00Z");
   const res3 = routePrompt("Now add the CLI status command", {
     stateDir: tmpDir,
     config,
