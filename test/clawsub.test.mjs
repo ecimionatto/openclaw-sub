@@ -318,7 +318,7 @@ test("configureOpenClawJson creates openclaw.json on first run and merges/backs 
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
-  const t1 = new Date("2026-11-25T16:00:00-05:00");
+  const t1 = new Date("2026-11-25T16:00:00Z");
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -368,7 +368,7 @@ test("shared session baton passes context across models on credit exhaustion AND
       if (command === "claude") {
         return {
           exitCode: 1,
-          stdout: "Edited src/state.mjs (lines 1-40)...\n{\"type\":\"result\",\"error\":\"usage_limit_reached: resets 6:50pm\"}",
+          stdout: "Edited src/state.mjs (lines 1-40)...\n{\"type\":\"result\",\"error\":\"usage_limit_reached: try again in 60 minutes\"}",
           stderr: "",
           latencyMs: 150,
         };
@@ -392,10 +392,10 @@ test("shared session baton passes context across models on credit exhaustion AND
   assert.match(codexReceived.prompt, /Mid-Turn Credit Exhaustion Handoff from claude/);
   assert.match(codexReceived.prompt, /Edited src\/state\.mjs/);
 
-  // Turn 3 (after 7:00pm when claude's 5h credit window resets):
-  // claude comes back online and receives Turn 2 completed by codex so claude has ZERO split-brain amnesia!
+  // Turn 3: after the 60min cooldown + 5min buffer expires, claude comes back online
+  // and receives Turn 2 completed by codex so claude has ZERO split-brain amnesia!
   receivedPrompts.length = 0;
-  const afterReset = new Date("2026-11-25T19:05:00-05:00");
+  const afterReset = new Date(t1.getTime() + 67 * 60_000);
   const res3 = routePrompt("Now add the CLI status command", {
     stateDir: tmpDir,
     config,
