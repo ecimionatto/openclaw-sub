@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stub: simulates Codex CLI answering successfully
+# argv: exec --skip-git-repo-check <prompt>
+echo "stub-codex-response: ok"
+exit 0
