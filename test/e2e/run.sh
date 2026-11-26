@@ -53,8 +53,7 @@ echo '{}' > "$HOME/.gemini/antigravity-cli/settings.json"
 "$CLAWSUB" doctor >/dev/null 2>&1 && pass "doctor exited 0" || fail "doctor failed"
 
 echo "==> 5. clawsub run (failover claude->codex, writes baton)"
-RUN_OUT=$("$CLAWSUB" run "hello world" 2>&1)
-[ $? -eq 0 ] || fail "run exited non-zero. Output: $RUN_OUT"
+RUN_OUT=$("$CLAWSUB" run "hello world" 2>&1) || fail "run exited non-zero. Output: $RUN_OUT"
 echo "$RUN_OUT" | grep -qF "stub-codex-response: ok" \
   && pass "run output contains 'stub-codex-response: ok'" \
   || fail "run did not output 'stub-codex-response: ok'. Output: $RUN_OUT"

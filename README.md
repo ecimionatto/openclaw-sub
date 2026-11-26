@@ -174,7 +174,7 @@ npm run test:e2e
 docker build -t clawsub-e2e -f test/e2e/Dockerfile . && docker run --rm clawsub-e2e
 ```
 
-**CI matrix** (`.github/workflows/e2e.yml`) runs the suite on `ubuntu-latest` with Node 18, 20, and 22 on every push and pull request to `main`.
+**CI matrix** (`.github/workflows/e2e.yml`) runs on every push and pull request to `main`: a Docker job on `ubuntu-latest` (node:22-slim) plus a native matrix across `ubuntu-latest` and `macos-latest` × Node 20 and 22.
 
 ### Route a prompt through the chain manually
 ```bash
