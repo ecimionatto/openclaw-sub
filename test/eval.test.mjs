@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -229,4 +230,46 @@ test("eval replay CLI without --dry-run exits 1 with helpful message", () => {
   const r = spawnSync("node", [BIN, "eval", "replay", "--task", "task-01", "--tasks-dir", TASKS_DIR, "--json"], { encoding: "utf8" });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /dry-run/);
+});
+
+test("parseLog: fix regex matches 'fix attempt 1' (no middle word)", () => {
+  const text = `2026-11-26T10:00:00Z repo:a/b task:T-1 fix attempt 1\n`;
+  const events = parseLog(text);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "fix attempt 1");
+});
+
+test("computeMetrics: events with trailing detail are not silently dropped", () => {
+  const log = `\
+2026-11-26T10:00:00Z repo:a/b task:T-1 spawned PR#42
+2026-11-26T10:01:00Z repo:a/b task:T-1 reviewed -> FIX (details)
+2026-11-26T10:02:00Z repo:a/b task:T-1 fix lint attempt 1
+2026-11-26T10:03:00Z repo:a/b task:T-1 reviewed -> APPROVE (details)
+2026-11-26T10:05:00Z repo:a/b task:T-1 merged main
+2026-11-26T10:10:00Z repo:a/b task:T-2 spawned
+2026-11-26T10:11:00Z repo:a/b task:T-2 rescope reason:too-big
+`;
+  const events = parseLog(log);
+  const m = computeMetrics(events)["a/b"];
+  assert.equal(m.taskCount, 2, "both tasks counted");
+  assert.equal(m.rescopeRate, 50, "rescoped task counted despite trailing detail on rescope event");
+  assert.equal(m.fixConvergenceRate, 100, "fix→merge pipeline works with trailing detail on spawned/merged/review");
+  assert.equal(m.firstPassApproveRate, 0, "FIX review not counted as first-pass approve");
+});
+
+test("replayDryRun resolves acceptanceTest relative to tasksDir, not PKG_ROOT", (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-eval-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true }));
+  const testFile = path.join(tmpDir, "acceptance.test.mjs");
+  fs.writeFileSync(testFile, "// stub\n");
+  const task = {
+    id: "tmp-01",
+    title: "Tmp",
+    prompt: "do thing",
+    acceptanceCriteria: ["pass"],
+    acceptanceTest: "acceptance.test.mjs",
+  };
+  fs.writeFileSync(path.join(tmpDir, "tmp-01.json"), JSON.stringify(task));
+  const plan = replayDryRun("tmp-01", { tasksDir: tmpDir });
+  assert.equal(plan.acceptanceTestFile, testFile, "resolves relative to tasksDir");
 });

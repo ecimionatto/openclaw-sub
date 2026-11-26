@@ -6,7 +6,6 @@ const DEFAULT_TASKS_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../evals/tasks"
 );
-const PKG_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 const TASK_ID_RE = /^[\w-]+$/;
 
@@ -32,7 +31,7 @@ export function listTasks({ tasksDir = DEFAULT_TASKS_DIR } = {}) {
 export function replayDryRun(taskId, { tasksDir = DEFAULT_TASKS_DIR } = {}) {
   const task = loadTask(taskId, { tasksDir });
   const testFile = task.acceptanceTest ?? null;
-  const absTestFile = testFile ? path.resolve(PKG_ROOT, testFile) : null;
+  const absTestFile = testFile ? path.resolve(tasksDir, testFile) : null;
   const testCmd = absTestFile ? `node --test ${absTestFile}` : null;
   return {
     taskId: task.id,
@@ -64,7 +63,13 @@ export function evalReplay({ taskId, tasksDir, json } = {}) {
   if (!taskId) {
     throw new Error("--task <id> is required");
   }
-  const plan = replayDryRun(taskId, { tasksDir });
+  let plan;
+  try {
+    plan = replayDryRun(taskId, { tasksDir });
+  } catch (err) {
+    process.stderr.write(`error: ${err.message}\n`);
+    process.exit(1);
+  }
   if (json) {
     console.log(JSON.stringify(plan, null, 2));
   } else {

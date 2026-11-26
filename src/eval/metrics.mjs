@@ -61,28 +61,28 @@ export function computeMetrics(events, { repo } = {}) {
 
     for (const task of repoTasks) {
       const evs = task.events;
-      const spawnEv = evs.find((e) => e.event === "spawned");
-      const mergedEv = evs.find((e) => e.event === "merged");
+      const spawnEv = evs.find((e) => e.event === "spawned" || e.event.startsWith("spawned "));
+      const mergedEv = evs.find((e) => e.event === "merged" || e.event.startsWith("merged "));
       const reviews = evs.filter((e) => e.event.startsWith("reviewed ->"));
-      const fixes = evs.filter((e) => /^fix .+ attempt \d+$/.test(e.event));
-      const hasRescope = evs.some((e) => e.event === "rescope");
+      const fixes = evs.filter((e) => /^fix(?: .+)? attempt \d+/.test(e.event));
+      const hasRescope = evs.some((e) => e.event === "rescope" || e.event.startsWith("rescope "));
 
       if (reviews.length > 0) {
         tasksWithReview++;
-        if (reviews[0].event === "reviewed -> APPROVE") firstPassApprove++;
+        if (reviews[0].event.startsWith("reviewed -> APPROVE")) firstPassApprove++;
       }
 
       if (mergedEv) {
         mergedCount++;
         totalFixRuns += fixes.length;
-        const hadFixReview = reviews.some((e) => e.event === "reviewed -> FIX");
+        const hadFixReview = reviews.some((e) => e.event.startsWith("reviewed -> FIX"));
         if (hadFixReview) fixedThenMerged++;
         if (spawnEv?.ts && mergedEv.ts) {
           timesToMerge.push((mergedEv.ts - spawnEv.ts) / 60000);
         }
       }
 
-      if (evs.some((e) => e.event === "reviewed -> FIX")) hadFix++;
+      if (evs.some((e) => e.event.startsWith("reviewed -> FIX"))) hadFix++;
       if (hasRescope) rescopedCount++;
     }
 
@@ -112,7 +112,13 @@ export function computeMetrics(events, { repo } = {}) {
 }
 
 export function evalMetrics({ logPath, repo, json } = {}) {
-  const text = fs.readFileSync(logPath, "utf8");
+  let text;
+  try {
+    text = fs.readFileSync(logPath, "utf8");
+  } catch {
+    process.stderr.write(`error: cannot read log file: ${logPath}\n`);
+    process.exit(1);
+  }
   const events = parseLog(text);
   const nonBlankLines = text.split("\n").filter((l) => l.trim()).length;
   const skippedLines = nonBlankLines - events.length;

@@ -8,5 +8,5 @@
     "help text includes --json in the version command signature",
     "unit test covers both --json and plain output"
   ],
-  "acceptanceTest": "evals/tests/task-01.test.mjs"
+  "acceptanceTest": "../tests/task-01.test.mjs"
 }

@@ -8,5 +8,5 @@
     "normal output is unaffected when --repo does match events",
     "unit test covers the warning case"
   ],
-  "acceptanceTest": "evals/tests/task-03.test.mjs"
+  "acceptanceTest": "../tests/task-03.test.mjs"
 }
