@@ -57,7 +57,7 @@ One subscription CLI wired directly — `$0` extra API bill, but:
 - **Uptime**: Each subscription CLI has a rolling 5-hour usage window; once the cap is
   reached the bot goes offline until the window resets — from minutes to hours later,
   depending on when in the window the cap was hit.
-- **Recovery time** after quota hit: manual human intervention required (minutes → hours)
+- **Recovery time** after quota hit: wait for the 5-hour window to reset (0 min – 5 hrs depending on when the cap was hit)
 - **Overnight drain**: if heartbeats are not paused, overnight polling can drain the
   quota window before your morning standup, leaving zero turns for daytime use.
 
@@ -67,8 +67,8 @@ One subscription CLI wired directly — `$0` extra API bill, but:
 | :--- | :--- |
 | Extra monthly API bill | **$0** (uses existing subscriptions) |
 | Failover latency on quota hit | **Automatic, same-turn** (quota error detected in-turn; next provider used immediately — no manual wait) |
-| Uptime across 2 providers | **~95 %** (qualitative estimate; both providers simultaneously quota-exhausted ~5% of the time) |
-| Uptime across 3 providers | **>99 %** (qualitative estimate; independent 5-hour windows rarely overlap simultaneously) |
+| Uptime across 2 providers | Higher than single CLI; both providers must exhaust their windows simultaneously to cause downtime |
+| Uptime across 3 providers | Significantly higher; three independent 5-hour windows rarely overlap simultaneously |
 | Overnight heartbeat drain | **Paused** during quiet/reservation windows; resumes on first active turn |
 | Session continuity on failover | **Preserved** via Cross-Model Session Pass-Down Baton (`src/baton.mjs`) |
 
@@ -143,20 +143,21 @@ clawsub version
 ### Expected `clawsub savings` output (baseline workload, 2000/500/200 split)
 
 ```
-🦞 clawsub savings (v0.3.0)
+💰 clawsub savings (v0.3.0)
 
-Tracked window:  30.0 days  |  2,700 turns
+Total Turns Routed:  2700
+Days Tracked:        30
+Total API Cost Saved: $55.1973
+Daily Average:        $1.8399/day
+Monthly Projection:   $55.20/month
 
-Provider               Turns   Input tokens   Output tokens   Saved (est.)
-──────────────────────────────────────────────────────────────────────────
-Claude Opus API (est.) 2,000      991,000        498,000        $52.2150
-OpenAI GPT/Codex API     500      247,750        124,500         $2.6108
-Gemini API               200       99,250         49,500         $0.3716
-──────────────────────────────────────────────────────────────────────────
-Total                  2,700    1,338,000        672,000        $55.20/mo
-
-30-day API equivalent (if all turns on claude primary):  ~$70.47
+By Provider:
+  • claude   (Claude Opus API (est.)): 2000 turns, 991,000 input + 498,000 output tokens → $52.2150 saved
+  • codex    (OpenAI GPT/Codex API): 500 turns, 247,750 input + 124,500 output tokens → $2.6108 saved
+  • agy      (Gemini API): 200 turns, 99,250 input + 49,500 output tokens → $0.3716 saved
 ```
+
+For comparison, running all 2,700 turns through the Claude Opus API (1,338,000 input + 672,000 output tokens) would cost **~$70.47** — nearly $15 more than the mixed-provider savings shown above.
 
 > Actual numbers depend on your subscription mix and turn sizes.
 > `clawsub savings --json` outputs machine-readable values for scripting.
@@ -168,6 +169,5 @@ Total                  2,700    1,338,000        672,000        $55.20/mo
 - Token estimates use `CHARS_PER_TOKEN = 4` (the constant in `src/savings.mjs`).
 - Claude pricing uses Opus rates as a conservative upper bound; actual model may be cheaper.
 - The 5-hour window model assumes uniform turn distribution; burst usage drains quota faster.
-- Uptime percentages are qualitative estimates, not measured — actual uptime depends on your
-  subscription tier and usage pattern. Use `clawsub status --json` to observe real-world
-  cooldown behavior.
+- Setup C uptime descriptions are qualitative — actual uptime depends on your subscription tier
+  and usage pattern. Use `clawsub status --json` to observe real-world cooldown behavior.

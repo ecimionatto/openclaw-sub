@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   CLAWSUB_VERSION,
@@ -462,7 +463,7 @@ test("install-systemd --enable exits 1 when systemctl fails", () => {
   const fakeSystemctl = path.join(tmpDir, "systemctl");
   fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 
-  const binPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
   const result = spawnSync(
     process.execPath,
     [binPath, "install-systemd", "--enable", `--workspace=${tmpDir}`],
@@ -859,7 +860,7 @@ test("saveState/loadState round-trip preserves savings and handles legacy state 
 });
 
 test("cmdSavings CLI command outputs savings for both empty and populated state dirs", () => {
-  const binPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
 
   // Empty state dir
   const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-sv-empty-"));
@@ -898,7 +899,7 @@ test("cmdSavings CLI command outputs savings for both empty and populated state 
 });
 
 test("docs/BENCHMARKS.md exists and contains required sections and workload numbers", () => {
-  const benchPath = new URL("../docs/BENCHMARKS.md", import.meta.url).pathname;
+  const benchPath = fileURLToPath(new URL("../docs/BENCHMARKS.md", import.meta.url));
   assert.ok(fs.existsSync(benchPath), "docs/BENCHMARKS.md must exist");
 
   const content = fs.readFileSync(benchPath, "utf8");
@@ -950,13 +951,26 @@ test("BENCHMARKS.md documented costs and token totals are consistent with comput
     `totalSavedUsd (${result.totalSavedUsd}) should be ~$55.20`
   );
 
-  // 30-day API equivalent (all turns on claude): 1,338,000 × $15/M + 672,000 × $75/M = $70.47
-  const claudeApiEquiv = (1_338_000 / 1_000_000) * 15 + (672_000 / 1_000_000) * 75;
+  // 30-day API equivalent (all turns on claude): derived from PROVIDER_PRICING constants
+  const claudeApiEquiv =
+    (totalInput  / 1_000_000) * PROVIDER_PRICING.claude.inputPerM +
+    (totalOutput / 1_000_000) * PROVIDER_PRICING.claude.outputPerM;
   assert.ok(Math.abs(claudeApiEquiv - 70.47) < 0.01, `Claude-only API equiv must be ~$70.47 (got ${claudeApiEquiv})`);
+
+  // Verify BENCHMARKS.md contains the computed cost figures
+  const benchPath = fileURLToPath(new URL("../docs/BENCHMARKS.md", import.meta.url));
+  const benchContent = fs.readFileSync(benchPath, "utf8");
+  assert.ok(benchContent.includes("$70.47"), "BENCHMARKS.md must document Claude API equivalent ~$70.47");
+  assert.ok(benchContent.includes("$14.09"), "BENCHMARKS.md must document Codex API cost ~$14.09");
+  assert.ok(benchContent.includes("$5.03"),  "BENCHMARKS.md must document Gemini API cost ~$5.03");
+  assert.ok(benchContent.includes("$55.20"), "BENCHMARKS.md must document total monthly savings ~$55.20");
+  assert.ok(benchContent.includes("52.2150"), "BENCHMARKS.md must include Claude per-provider savings $52.2150");
+  assert.ok(benchContent.includes("2.6108"),  "BENCHMARKS.md must include Codex per-provider savings $2.6108");
+  assert.ok(benchContent.includes("0.3716"),  "BENCHMARKS.md must include Gemini per-provider savings $0.3716");
 });
 
 test("README.md links to docs/BENCHMARKS.md", () => {
-  const readmePath = new URL("../README.md", import.meta.url).pathname;
+  const readmePath = fileURLToPath(new URL("../README.md", import.meta.url));
   assert.ok(fs.existsSync(readmePath), "README.md must exist");
   const content = fs.readFileSync(readmePath, "utf8");
   assert.ok(content.includes("docs/BENCHMARKS.md"), "README.md must link to docs/BENCHMARKS.md");
