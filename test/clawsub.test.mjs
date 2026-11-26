@@ -1012,17 +1012,32 @@ test("pluginEntry.register calls api.registerCliBackend with declarative CliBack
   assert.equal(backend.config.command, "/usr/local/bin/agy");
   assert.equal(backend.config.output, "jsonl");
   assert.equal(backend.config.input, "arg");
+  assert.equal(backend.config.promptArg, "--prompt");
   assert.equal(backend.config.modelArg, "--model");
   assert.ok(backend.config.args.includes("--output-format"));
   assert.ok(backend.config.args.includes("stream-json"));
-  assert.ok(backend.config.args.includes("{prompt}"));
   assert.ok(backend.config.resumeArgs.includes("{sessionId}"));
+  assert.ok(!backend.config.args.includes("--dangerously-skip-permissions"), "dangerous flag must not be present by default");
+  assert.ok(backend.config.args.includes("--disable-slash-commands"), "agy backend must include --disable-slash-commands");
 
-  // Fallback to altBinary ("gemini") when "agy" is not installed
-  const altCmd = resolveAgyCommand((bin) =>
+  // When gemini is the only installed binary, it gets gemini-specific config (different flags, no resume)
+  const geminiRegistered = [];
+  const geminiApi = { registerCliBackend(b) { geminiRegistered.push(b); } };
+  pluginEntry.register(geminiApi, {
+    findBinary: (bin) => (bin === "gemini" ? { installed: true, path: "/opt/bin/gemini" } : { installed: false }),
+  });
+  const geminiBackend = geminiRegistered[0];
+  assert.equal(geminiBackend.config.command, "/opt/bin/gemini");
+  assert.ok(!geminiBackend.config.args.includes("--disable-slash-commands"), "gemini must not use --disable-slash-commands");
+  assert.equal(geminiBackend.config.resumeArgs, undefined, "gemini has no resume support");
+  assert.equal(geminiBackend.config.promptArg, "--prompt");
+
+  // resolveAgyCommand returns { command, binary } — fallback to altBinary
+  const altResult = resolveAgyCommand((bin) =>
     bin === "gemini" ? { installed: true, path: "/opt/bin/gemini" } : { installed: false }
   );
-  assert.equal(altCmd, "/opt/bin/gemini");
+  assert.equal(altResult.command, "/opt/bin/gemini");
+  assert.equal(altResult.binary, "gemini");
 });
 
 test("parseAgyJsonlEvent and parseJSONL parse init, step_update, result, and malformed lines", () => {
@@ -1054,6 +1069,22 @@ test("parseAgyJsonlEvent and parseJSONL parse init, step_update, result, and mal
     }
   );
   assert.equal(parseAgyJsonlEvent("not-json"), null);
+
+  // failure path: non-SUCCESS status
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "result", result: { status: "FAILURE" } })),
+    { kind: "result", text: "", errorText: "Antigravity CLI ended with status FAILURE." }
+  );
+  // failure path: explicit error field takes priority over status message
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "result", result: { error: "rate limit exceeded", status: "ERROR" } })),
+    { kind: "result", text: "", errorText: "rate limit exceeded" }
+  );
+  // failure path: error with no status still produces errorText
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "result", result: { error: "timeout" } })),
+    { kind: "result", text: "", errorText: "timeout" }
+  );
 
   const lines = parseJSONL(`{"a":1}\nmalformed\n{"b":2}`);
   assert.equal(lines.length, 3);

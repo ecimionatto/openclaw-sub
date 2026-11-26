@@ -1,11 +1,6 @@
-import { PROVIDERS } from "./providers.mjs";
-import { detectBinary } from "./providers.mjs";
+import { detectBinary, PROVIDERS } from "./providers.mjs";
 
 export const PLUGIN_NAME = "openclaw-sub";
-
-export const AGY_SESSION_SETTINGS = JSON.stringify({
-  allowNonWorkspaceAccess: true,
-});
 
 export function normalizeAgyUsage(raw) {
   if (!raw || typeof raw !== "object") {
@@ -59,7 +54,6 @@ export function parseAgyJsonlEvent(line) {
       if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
         events.push({ kind: "text", text: update.text_delta });
       }
-      return events;
     }
     return events;
   }
@@ -91,6 +85,38 @@ export function parseAgyJsonlEvent(line) {
   return [];
 }
 
+// Gemini CLI (@google/gemini-cli) uses `type` field in stream-json events, not `event`.
+export function parseGeminiJsonlEvent(line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  if (typeof parsed.type !== "string") return null;
+
+  if (parsed.type === "content") {
+    const text = typeof parsed.content === "string" ? parsed.content : "";
+    return text ? [{ kind: "text", text }] : [];
+  }
+  if (parsed.type === "done" || parsed.type === "result") {
+    const usage = normalizeAgyUsage(parsed.usage);
+    const sessionId =
+      (typeof parsed.session_id === "string" && parsed.session_id.trim()) || undefined;
+    const errorText =
+      (typeof parsed.error === "string" && parsed.error.trim()) || undefined;
+    return {
+      kind: "result",
+      text: !errorText && typeof parsed.response === "string" ? parsed.response : "",
+      ...(sessionId ? { sessionId } : {}),
+      ...(usage ? { usage } : {}),
+      ...(errorText ? { errorText } : {}),
+    };
+  }
+  return [];
+}
+
 export function parseJSONL(text) {
   return String(text || "")
     .split("\n")
@@ -104,45 +130,61 @@ export function parseJSONL(text) {
     });
 }
 
+// Returns { command, binary } so callers can build binary-specific configs.
 export function resolveAgyCommand(findBinary = detectBinary) {
   const primary = findBinary(PROVIDERS.agy.binary);
   if (primary?.installed) {
-    return primary.path || PROVIDERS.agy.binary;
+    return { command: primary.path || PROVIDERS.agy.binary, binary: PROVIDERS.agy.binary };
   }
   const alt = PROVIDERS.agy.altBinary ? findBinary(PROVIDERS.agy.altBinary) : null;
   if (alt?.installed) {
-    return alt.path || PROVIDERS.agy.altBinary;
+    return { command: alt.path || PROVIDERS.agy.altBinary, binary: PROVIDERS.agy.altBinary };
   }
-  return PROVIDERS.agy.binary;
+  return { command: PROVIDERS.agy.binary, binary: PROVIDERS.agy.binary };
 }
 
 export function buildAgyCliBackend({ findBinary = detectBinary } = {}) {
-  const command = resolveAgyCommand(findBinary);
-  const baseFlags = [
-    "--dangerously-skip-permissions",
-    "--disable-slash-commands",
-    "--settings",
-    AGY_SESSION_SETTINGS,
-    "--output-format",
-    "stream-json",
-  ];
+  const { command, binary } = resolveAgyCommand(findBinary);
+  const isGemini = binary === PROVIDERS.agy.altBinary;
 
+  if (isGemini) {
+    // Gemini CLI does not support --disable-slash-commands or --conversation resume,
+    // and uses a different stream-json event format.
+    return {
+      id: "agy-cli",
+      modelProvider: "agy-cli",
+      ownsNativeCompaction: true,
+      sideQuestionToolMode: "disabled",
+      autoSelectAuthProfile: false,
+      parseJsonlEvent: parseGeminiJsonlEvent,
+      config: {
+        command,
+        args: ["--output-format", "stream-json"],
+        output: "jsonl",
+        input: "arg",
+        promptArg: "--prompt",
+        modelArg: "--model",
+        serialize: true,
+      },
+    };
+  }
+
+  const baseFlags = ["--disable-slash-commands", "--output-format", "stream-json"];
   return {
     id: "agy-cli",
     modelProvider: "agy-cli",
     ownsNativeCompaction: true,
-    nativeToolMode: "selectable",
     sideQuestionToolMode: "disabled",
-    toolAvailabilityEnforcement: "prepare-execution",
     autoSelectAuthProfile: false,
     parseJsonlEvent: parseAgyJsonlEvent,
     config: {
       command,
-      args: [...baseFlags, "--prompt", "{prompt}"],
-      resumeArgs: ["--conversation", "{sessionId}", ...baseFlags, "--prompt", "{prompt}"],
+      args: baseFlags,
+      resumeArgs: ["--conversation", "{sessionId}", ...baseFlags],
       output: "jsonl",
       resumeOutput: "jsonl",
       input: "arg",
+      promptArg: "--prompt",
       modelArg: "--model",
       sessionMode: "existing",
       sessionIdFields: ["conversation_id", "conversationId", "session_id", "sessionId"],
