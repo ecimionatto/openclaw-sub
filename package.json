@@ -13,7 +13,7 @@
     "./plugin": "./src/plugin.mjs"
   },
   "openclaw": {
-    "pluginManifest": "./openclaw.plugin.json"
+    "extensions": ["./src/plugin.mjs"]
   },
   "files": [
     "bin/",

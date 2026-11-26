@@ -2,32 +2,6 @@ import { PROVIDERS } from "./providers.mjs";
 
 export const PLUGIN_NAME = "openclaw-sub";
 
-// Registers the agy-cli backend as an OpenClaw plugin entry point.
-// When users add this file's path (or its parent directory) to openclaw.json
-// plugins.load.paths, OpenClaw can discover and invoke the agy/Gemini CLI backend.
-export const agyCLIBackend = {
-  ...PROVIDERS.agy,
-  plugin: true,
-};
-
-/**
- * Returns plugin identity and backend for OpenClaw plugin system discovery.
- * @returns {{ name: string, provides: string[], backend: object }}
- */
-export function getPluginInfo() {
-  return {
-    name: PLUGIN_NAME,
-    provides: ["agy-cli"],
-    backend: agyCLIBackend,
-  };
-}
-
-/**
- * Parses JSONL (newline-delimited JSON) output from subscription CLI tools.
- * Lines that are not valid JSON are returned as { raw: line }.
- * @param {string} text
- * @returns {Array<object>}
- */
 export function parseJSONL(text) {
   return text
     .split("\n")
@@ -40,3 +14,33 @@ export function parseJSONL(text) {
       }
     });
 }
+
+const agyCLIBackend = {
+  id: "agy-cli",
+  command: PROVIDERS.agy.binary,
+  altCommand: PROVIDERS.agy.altBinary,
+  buildArgs: (prompt, opts = {}) => {
+    const { args } = PROVIDERS.agy.buildCommand(prompt, opts);
+    return args;
+  },
+  parseOutput: (text) => parseJSONL(text),
+};
+
+export function getPluginInfo() {
+  return {
+    name: PLUGIN_NAME,
+    provides: ["agy-cli"],
+    backend: agyCLIBackend,
+  };
+}
+
+export default {
+  register(api) {
+    api.registerCliBackend("agy-cli", {
+      command: agyCLIBackend.command,
+      altCommand: agyCLIBackend.altCommand,
+      buildArgs: agyCLIBackend.buildArgs,
+      parseOutput: agyCLIBackend.parseOutput,
+    });
+  },
+};

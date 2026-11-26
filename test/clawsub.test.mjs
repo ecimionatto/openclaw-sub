@@ -22,7 +22,8 @@ import {
   runDoctor,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
-import { getPluginInfo, parseJSONL } from "../src/plugin.mjs";
+import { fileURLToPath } from "node:url";
+import pluginEntry, { getPluginInfo, parseJSONL } from "../src/plugin.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
@@ -571,16 +572,45 @@ test("inspectOpenClawJson expands ~ paths before checking existence", () => {
 });
 
 test("openclaw.plugin.json has required fields, valid entry path, and provides agy-cli", () => {
-  const manifestPath = new URL("../openclaw.plugin.json", import.meta.url).pathname;
+  const manifestPath = fileURLToPath(new URL("../openclaw.plugin.json", import.meta.url));
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.equal(typeof manifest.id, "string", "id must be a string");
   assert.equal(typeof manifest.name, "string", "name must be a string");
   assert.equal(typeof manifest.version, "string", "version must be a string");
   assert.equal(typeof manifest.entry, "string", "entry must be a string");
   assert.ok(Array.isArray(manifest.provides), "provides must be an array");
   assert.ok(manifest.provides.includes("agy-cli"), "must provide agy-cli backend");
-  const entryPath = new URL(manifest.entry, new URL("../openclaw.plugin.json", import.meta.url))
-    .pathname;
+  assert.ok(Array.isArray(manifest.cliBackends), "cliBackends must be an array");
+  assert.ok(manifest.cliBackends.includes("agy-cli"), "cliBackends must include agy-cli");
+  assert.equal(typeof manifest.configSchema, "object", "configSchema must be an object");
+  const entryPath = fileURLToPath(new URL(manifest.entry, new URL("../openclaw.plugin.json", import.meta.url)));
   assert.equal(fs.existsSync(entryPath), true, "entry file must exist on disk");
+});
+
+test("openclaw.plugin.json version matches package.json version", () => {
+  const manifestPath = fileURLToPath(new URL("../openclaw.plugin.json", import.meta.url));
+  const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  assert.equal(manifest.version, pkg.version, "plugin manifest version must match package.json version");
+});
+
+test("plugin default export register() calls api.registerCliBackend with id agy-cli and correct shape", () => {
+  let registered = null;
+  const fakeApi = {
+    registerCliBackend(id, config) {
+      registered = { id, config };
+    },
+  };
+  pluginEntry.register(fakeApi);
+  assert.ok(registered, "registerCliBackend must be called");
+  assert.equal(registered.id, "agy-cli", "must register with id agy-cli");
+  assert.equal(typeof registered.config.command, "string", "command must be a string");
+  assert.equal(typeof registered.config.buildArgs, "function", "buildArgs must be a function");
+  assert.equal(typeof registered.config.parseOutput, "function", "parseOutput must be a function");
+  const args = registered.config.buildArgs("hello world");
+  assert.ok(Array.isArray(args), "buildArgs must return an array");
+  assert.ok(args.includes("hello world"), "buildArgs must include the prompt");
 });
 
 test("parseJSONL parses JSONL CLI output: mixed JSON lines and plain text", () => {
@@ -593,20 +623,27 @@ test("parseJSONL parses JSONL CLI output: mixed JSON lines and plain text", () =
   ].join("\n");
 
   const lines = parseJSONL(input);
-  assert.equal(lines.length, 4); // empty line is filtered
+  assert.equal(lines.length, 4);
   assert.deepEqual(lines[0], { type: "result", output: "Hello world" });
   assert.deepEqual(lines[1], { raw: "Some plain text line" });
   assert.deepEqual(lines[2], { type: "result", error: "usage_limit_reached: resets 6:50pm" });
   assert.deepEqual(lines[3], { type: "tool_use", name: "bash" });
 });
 
-test("getPluginInfo returns agy-cli backend with plugin flag", () => {
+test("parseJSONL is wired into the agy-cli backend parseOutput", () => {
+  const info = getPluginInfo();
+  const result = info.backend.parseOutput('{"type":"result","output":"ok"}\nplain text');
+  assert.deepEqual(result[0], { type: "result", output: "ok" });
+  assert.deepEqual(result[1], { raw: "plain text" });
+});
+
+test("getPluginInfo returns agy-cli backend with id and buildArgs", () => {
   const info = getPluginInfo();
   assert.equal(info.name, "openclaw-sub");
   assert.ok(Array.isArray(info.provides));
   assert.ok(info.provides.includes("agy-cli"));
-  assert.equal(info.backend.plugin, true);
-  assert.equal(typeof info.backend.buildCommand, "function");
+  assert.equal(info.backend.id, "agy-cli");
+  assert.equal(typeof info.backend.buildArgs, "function");
 });
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
