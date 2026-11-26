@@ -19,6 +19,7 @@ import {
   isHeartbeatPrompt,
   isQuotaError,
   loadState,
+  loopInit,
   parseResetTime,
   PROVIDER_PRICING,
   recordTurnSavings,
@@ -1009,4 +1010,42 @@ test("agent discovery manifests exist and are well-formed", () => {
   assert.ok(pkgJson.files.includes(".well-known/"), "package.json files must include .well-known/");
   assert.ok(pkgJson.files.includes("llms.txt"), "package.json files must include llms.txt");
   assert.ok(pkgJson.files.includes("llms-full.txt"), "package.json files must include llms-full.txt");
+});
+
+test("loopInit copies all loop-pack files into workspace/.clawsub-loop and returns cron lines", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-"));
+  const result = loopInit({ workspace: tmpDir });
+
+  assert.equal(result.dryRun, false);
+  assert.equal(result.destDir, path.join(tmpDir, ".clawsub-loop"));
+  assert.equal(result.copied.length, 6);
+
+  const expectedFiles = [
+    "SKILL.md",
+    "templates/BACKLOG.md",
+    "templates/worker-prompt.md",
+    "templates/fix-prompt.md",
+    "templates/review-prompt.md",
+    "templates/standup.md",
+  ];
+
+  for (const file of expectedFiles) {
+    const dest = path.join(tmpDir, ".clawsub-loop", file);
+    assert.ok(fs.existsSync(dest), `${file} must be copied`);
+    assert.ok(fs.readFileSync(dest, "utf8").length > 0, `${file} must not be empty`);
+  }
+
+  assert.ok(Array.isArray(result.cronLines), "cronLines must be an array");
+  assert.ok(result.cronLines.length >= 2, "at least 2 cron lines");
+  assert.ok(result.cronLines.some((l) => /clawsub loop/.test(l)), "cron lines mention clawsub loop");
+});
+
+test("loopInit dry-run returns expected paths without writing files", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-dry-"));
+  const result = loopInit({ workspace: tmpDir, dryRun: true });
+
+  assert.equal(result.dryRun, true);
+  assert.equal(result.copied.length, 6);
+  assert.ok(!fs.existsSync(result.destDir), "dry-run must not create destDir");
+  assert.ok(result.copied.every((p) => p.startsWith(result.destDir)), "all paths are under destDir");
 });

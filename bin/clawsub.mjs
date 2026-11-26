@@ -25,12 +25,14 @@ import {
   recordVersionSnapshot,
 } from "../src/versions.mjs";
 import { installSystemdService } from "../src/ubuntu-systemd.mjs";
+import { loopInit } from "../src/loop.mjs";
 
 function printHelp() {
   console.log(`🦞 clawsub (openclaw-sub v${CLAWSUB_VERSION})
 Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemini) with $0 API bills.
 
 Usage:
+  clawsub loop init [--workspace <path>] [--dry-run]
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
   clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
@@ -483,6 +485,35 @@ function cmdSavings(flags) {
   }
 }
 
+function cmdLoopInit(flags) {
+  const stateDir = getDefaultStateDir();
+  const config = loadConfig(stateDir);
+  const workspace = flags.workspace || config.workspace || process.cwd();
+  const dryRun = Boolean(flags["dry-run"]);
+
+  const result = loopInit({ workspace, dryRun });
+
+  if (dryRun) {
+    console.log("🦞 clawsub loop init (dry-run)\n");
+    console.log(`Destination: ${result.destDir}\n`);
+    console.log("Files to copy:");
+    for (const p of result.copied) {
+      console.log(`  ${p}`);
+    }
+  } else {
+    console.log("🦞 clawsub loop init\n");
+    console.log(`Copied loop-pack to: ${result.destDir}\n`);
+    for (const p of result.copied) {
+      console.log(`  ✓ ${p}`);
+    }
+  }
+
+  console.log("\nSuggested crontab entries (run `crontab -e` to add):");
+  for (const line of result.cronLines) {
+    console.log(`  ${line}`);
+  }
+}
+
 function cmdBaton(flags) {
   const stateDir = getDefaultStateDir();
   const store = loadBatonStore(stateDir);
@@ -540,6 +571,17 @@ function main() {
 
   if (subcmd === "version") {
     cmdVersion(flags);
+    return;
+  }
+
+  if (subcmd === "loop") {
+    const loopSubcmd = positional[1];
+    if (loopSubcmd === "init") {
+      cmdLoopInit(flags);
+    } else {
+      console.error(`Unknown loop subcommand: ${loopSubcmd || "(none)"}. Use: clawsub loop init`);
+      process.exit(1);
+    }
     return;
   }
 
