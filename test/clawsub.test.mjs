@@ -18,6 +18,7 @@ import {
   parseResetTime,
   recordVersionSnapshot,
   routePrompt,
+  runDoctor,
 } from "../src/index.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
@@ -265,6 +266,82 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
     "@anthropic-ai/claude-code@latest",
     "@openai/codex@latest",
   ]);
+});
+
+test("runDoctor reports no openclaw.json issues when config is valid and headless-safe", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-valid-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+  const agyCli = path.join(tmpDir, "agy");
+  fs.writeFileSync(agyCli, "#!/bin/sh\necho agy", { mode: 0o755 });
+
+  const oc = {
+    providers: {
+      anthropic: { sessionCatalog: { enabled: false } },
+      codex: { sessionCatalog: { enabled: false } },
+    },
+    plugins: [{ id: "agy-cli", path: agyCli }],
+  };
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.equal(
+    report.openclawJson.issues.length,
+    0,
+    `Expected no openclaw.json issues but got: ${report.openclawJson.issues.join("; ")}`
+  );
+});
+
+test("runDoctor detects misconfigured openclaw.json and emits exact remediation commands", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-bad-"));
+  const openclawDir = path.join(tmpDir, ".openclaw");
+  fs.mkdirSync(openclawDir, { recursive: true });
+
+  const oc = {
+    providers: {
+      anthropic: { sessionCatalog: { enabled: true } },
+      codex: { sessionCatalog: { enabled: true } },
+    },
+    plugins: [{ id: "agy-cli", path: "/nonexistent/path/to/agy" }],
+  };
+  fs.writeFileSync(path.join(openclawDir, "openclaw.json"), JSON.stringify(oc));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+
+  assert.ok(
+    report.openclawJson.issues.some((i) => /anthropic/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for anthropic"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /codex/.test(i) && /sessionCatalog/.test(i)),
+    "Expected sessionCatalog issue for codex"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) =>
+      /openclaw models auth login --provider anthropic --force/.test(r)
+    ),
+    "Expected anthropic remediation command"
+  );
+  assert.ok(
+    report.openclawJson.recommendations.some((r) =>
+      /openclaw models auth login --provider codex --force/.test(r)
+    ),
+    "Expected codex remediation command"
+  );
+  assert.ok(
+    report.openclawJson.issues.some((i) => /agy-cli/.test(i) && /path/.test(i)),
+    "Expected agy-cli plugin path issue"
+  );
+  assert.ok(
+    report.issues.some((i) => /anthropic/.test(i)),
+    "Top-level issues should include openclaw.json issues"
+  );
+});
+
+test("runDoctor skips openclaw.json checks gracefully when file is absent", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-absent-"));
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.equal(report.openclawJson, null, "openclawJson should be null when file missing");
 });
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {

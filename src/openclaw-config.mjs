@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PROVIDERS, detectBinary, inspectProvider } from "./providers.mjs";
 import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState } from "./state.mjs";
@@ -72,6 +73,58 @@ exec npx --yes openclaw-sub exec ${providerId} -- "$@"
 }
 
 /**
+ * Reads and parses ~/.openclaw/openclaw.json. Returns null if absent or unreadable.
+ * @param {string} [homeDir]
+ * @returns {object|null}
+ */
+export function readOpenClawJson(homeDir) {
+  const dir = homeDir || os.homedir();
+  const jsonPath = path.join(dir, ".openclaw", "openclaw.json");
+  try {
+    return JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+const SESSION_CATALOG_PROVIDERS = ["anthropic", "codex"];
+
+/**
+ * Validates an openclaw.json object for headless-safe settings.
+ * Returns { issues, recommendations } arrays with human-readable strings.
+ * @param {object} parsed
+ * @returns {{ issues: string[], recommendations: string[] }}
+ */
+export function inspectOpenClawJson(parsed) {
+  const issues = [];
+  const recommendations = [];
+
+  for (const providerId of SESSION_CATALOG_PROVIDERS) {
+    const providerCfg = parsed?.providers?.[providerId];
+    if (providerCfg !== undefined && providerCfg?.sessionCatalog?.enabled !== false) {
+      issues.push(
+        `openclaw.json: providers.${providerId}.sessionCatalog.enabled must be false for headless/cron use (currently: ${providerCfg?.sessionCatalog?.enabled ?? "unset"}).`
+      );
+      recommendations.push(
+        `Run: openclaw models auth login --provider ${providerId} --force  (then set sessionCatalog.enabled=false in ~/.openclaw/openclaw.json)`
+      );
+    }
+  }
+
+  const plugins = Array.isArray(parsed?.plugins) ? parsed.plugins : [];
+  const agyCli = plugins.find((p) => p?.id === "agy-cli");
+  if (agyCli !== undefined) {
+    if (!agyCli.path || !fs.existsSync(agyCli.path)) {
+      issues.push(
+        `openclaw.json: agy-cli plugin path does not exist: ${agyCli.path || "(empty)"}. Update plugins[agy-cli].path to the correct agy binary.`
+      );
+    }
+  }
+
+  return { issues, recommendations };
+}
+
+/**
  * Runs a comprehensive health and readiness check (`clawsub doctor`).
  * @param {{ stateDir?: string, homeDir?: string, now?: Date }} [opts]
  */
@@ -125,6 +178,14 @@ export function runDoctor(opts = {}) {
     }
   }
 
+  const parsedOcJson = readOpenClawJson(opts.homeDir);
+  let openclawJson = null;
+  if (parsedOcJson !== null) {
+    openclawJson = inspectOpenClawJson(parsedOcJson);
+    issues.push(...openclawJson.issues);
+    recommendations.push(...openclawJson.recommendations);
+  }
+
   return {
     ok: issues.length === 0 && installedReady.length > 0,
     openclaw: openclawBin,
@@ -132,5 +193,6 @@ export function runDoctor(opts = {}) {
     providers,
     issues,
     recommendations,
+    openclawJson,
   };
 }
