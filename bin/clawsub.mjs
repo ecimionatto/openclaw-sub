@@ -8,6 +8,7 @@ import {
 import { generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
 import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
 import { routePrompt } from "../src/router.mjs";
+import { computeSavings } from "../src/savings.mjs";
 import {
   getDefaultStateDir,
   getProviderCooldown,
@@ -38,6 +39,7 @@ Usage:
   clawsub status [--json]
   clawsub baton [--session <key>] [--clear] [--json]
   clawsub doctor [--json]
+  clawsub savings [--json]
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
@@ -452,6 +454,35 @@ function cmdReset(targetProvider) {
   }
 }
 
+function cmdSavings(flags) {
+  const stateDir = getDefaultStateDir();
+  const state = loadState(stateDir);
+  const result = computeSavings(state.savings);
+
+  if (flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`💰 clawsub savings (v${CLAWSUB_VERSION})\n`);
+  if (result.turnsTracked === 0) {
+    console.log("No turns tracked yet. Run `clawsub run <prompt>` to start saving.");
+    return;
+  }
+  console.log(`Total Turns Routed:  ${result.turnsTracked}`);
+  console.log(`Days Tracked:        ${result.daysTracked}`);
+  console.log(`Total API Cost Saved: $${result.totalSavedUsd.toFixed(4)}`);
+  console.log(`Daily Average:        $${result.dailyAvgUsd.toFixed(4)}/day`);
+  console.log(`Monthly Projection:   $${result.monthlyProjectionUsd.toFixed(2)}/month\n`);
+  console.log("By Provider:");
+  for (const p of result.byProvider) {
+    console.log(
+      `  • ${p.provider.padEnd(8)} (${p.label}): ${p.turnCount} turns, ` +
+        `${p.inputTokens.toLocaleString()} input + ${p.outputTokens.toLocaleString()} output tokens → $${p.savedUsd.toFixed(4)} saved`
+    );
+  }
+}
+
 function cmdBaton(flags) {
   const stateDir = getDefaultStateDir();
   const store = loadBatonStore(stateDir);
@@ -549,6 +580,11 @@ function main() {
 
   if (subcmd === "reset") {
     cmdReset(positional[1]);
+    return;
+  }
+
+  if (subcmd === "savings") {
+    cmdSavings(flags);
     return;
   }
 
