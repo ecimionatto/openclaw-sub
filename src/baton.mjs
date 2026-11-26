@@ -246,15 +246,20 @@ export function syncNativeTranscripts(
 
   const toImport = isInitialSync ? sorted.slice(-maxInitialBackfill) : sorted;
 
+  // Strip the session baton handoff header that clawsub run/exec may have prepended
+  // so decorated and plain prompts produce the same dedup fingerprint.
+  const HANDOFF_HEADER_RE = /^\[CLAWSUB SHARED SESSION BATON[^\]]*\][\s\S]*?\[END CLAWSUB SESSION BATON\]\n?/;
+  const normalizePrompt = (s) => (s || "").replace(HANDOFF_HEADER_RE, "").trimStart();
+
   // Deduplicate against turns already recorded by clawsub run/exec
   const session = getSessionBaton(store, sessionKey);
   const existingFingerprints = new Set(
-    session.turns.map((t) => `${t.prompt}|${t.response}`)
+    session.turns.map((t) => `${normalizePrompt(t.prompt)}|${t.response}`)
   );
 
   let imported = 0;
   for (const p of toImport) {
-    const fp = `${p.prompt}|${p.response}`;
+    const fp = `${normalizePrompt(p.prompt)}|${p.response}`;
     if (existingFingerprints.has(fp)) continue;
     existingFingerprints.add(fp);
     recordCompletedTurn(store, {

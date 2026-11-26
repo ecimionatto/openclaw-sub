@@ -541,14 +541,116 @@ test("syncNativeTranscripts merges harvested turns into baton store and persists
   assert.equal(saved.sessions.main.turns[0].provider, "claude");
   assert.equal(saved.sessions.main.turns[0].prompt, "Synced prompt");
   assert.match(saved.sessions.main.turns[0].response, /Synced response/);
-  assert.ok(saved.harvestWatermarks, "harvestWatermarks should be persisted in baton store");
+  const savedFilePath = Object.keys(saved.harvestWatermarks)[0];
+  assert.ok(savedFilePath, "harvestWatermarks should contain at least one file path");
+  assert.ok(saved.harvestWatermarks[savedFilePath] > 0, "per-file watermark should be advanced past line 0");
 
-  // Re-sync should import nothing new
-  const { imported: imported2 } = syncNativeTranscripts(saved, {
+  // Re-sync should import nothing new (watermark-based, not just dedup)
+  const store2 = loadBatonStore(tmpDir);
+  const { imported: imported2 } = syncNativeTranscripts(store2, {
     sessionKey: "main",
     transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
   });
-  assert.equal(imported2, 0, "Re-sync should not re-import already-seen turns");
+  assert.equal(imported2, 0, "Re-sync should not re-import already-seen turns via watermarks");
+});
+
+test("transcript-harvester: tool_result in native Claude message.content is filtered, not imported as user prompt", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-toolresult-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      // Native Claude shape: tool_result in message.content — should be filtered
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: "result text" }] } }),
+      JSON.stringify({ role: "user", content: "Real question" }),
+      JSON.stringify({ role: "assistant", content: "Real answer", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs.length, 1, "tool_result entry should be filtered, not imported as a user turn");
+  assert.equal(pairs[0].prompt, "Real question");
+  assert.equal(pairs[0].response, "Real answer");
+});
+
+test("transcript-harvester: user,user,assistant skips retried prompt and continues pairing", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-useruserast-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "First attempt (retried)" }),
+      JSON.stringify({ role: "user", content: "Second attempt" }),
+      JSON.stringify({ role: "assistant", content: "Reply to second", stop_reason: "end_turn" }),
+      JSON.stringify({ role: "user", content: "Follow-up" }),
+      JSON.stringify({ role: "assistant", content: "Follow-up reply", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs.length, 2, "should emit pairs for both user2+assistant and follow-up");
+  assert.equal(pairs[0].prompt, "Second attempt");
+  assert.equal(pairs[1].prompt, "Follow-up");
+});
+
+test("transcript-harvester: holds back incomplete trailing pair, captures second assistant on next sync", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-partial-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const filePath = path.join(claudeDir, "s.jsonl");
+
+  // Sync 1: user + partial assistant — stop_reason: null signals in-flight in native Claude format
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "Long question" }),
+      JSON.stringify({ role: "assistant", content: "Partial...", stop_reason: null }),
+    ].join("\n") + "\n"
+  );
+
+  const wm1 = {};
+  const { pairs: pairs1, watermarks: wm2 } = harvestProvider("claude", claudeDir, wm1);
+  assert.equal(pairs1.length, 0, "in-flight assistant (stop_reason:null at EOF) should be held back");
+
+  // Sync 2: second assistant chunk appended, this one has stop_reason
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "Long question" }),
+      JSON.stringify({ role: "assistant", content: "Partial...", stop_reason: null }),
+      JSON.stringify({ role: "assistant", content: "...completed.", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs2 } = harvestProvider("claude", claudeDir, wm2);
+  assert.equal(pairs2.length, 1, "completed pair should be emitted after second assistant chunk");
+  assert.ok(pairs2[0].response.includes("Partial..."), "response should include first chunk");
+  assert.ok(pairs2[0].response.includes("...completed."), "response should include second chunk");
+});
+
+test("syncNativeTranscripts: dedup strips handoff header before comparing fingerprints", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-dedup-hdr-"));
+  const store = { sessions: {}, harvestWatermarks: {} };
+
+  // Simulate a turn already in the baton from clawsub run/exec with a handoff header
+  const decoratedPrompt = "[CLAWSUB SHARED SESSION BATON — HANDOFF TO CLAUDE]\nYou are continuing...\n[END CLAWSUB SESSION BATON]\nPlain question";
+  recordCompletedTurn(store, { provider: "claude", prompt: decoratedPrompt, response: "The answer" });
+
+  // Native transcript has the plain (undecorated) prompt
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "Plain question" }),
+      JSON.stringify({ role: "assistant", content: "The answer", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { imported } = syncNativeTranscripts(store, {
+    sessionKey: "main",
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+  });
+  assert.equal(imported, 0, "plain prompt from transcript should match decorated stored prompt after stripping header");
 });
 
 test("runDoctor reports an issue for malformed openclaw.json (not silently skipped)", () => {

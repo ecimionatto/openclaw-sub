@@ -422,7 +422,11 @@ function cmdBaton(flags) {
   if (flags.sync) {
     const result = syncNativeTranscripts(store, { sessionKey });
     saveBatonStore(store, stateDir);
-    console.log(`✓ Synced native CLI transcripts into baton (${result.imported} turn pairs imported)`);
+    if (flags.json) {
+      console.log(JSON.stringify({ imported: result.imported, watermarks: store.harvestWatermarks }, null, 2));
+    } else {
+      console.log(`✓ Synced native CLI transcripts into baton (${result.imported} turn pairs imported)`);
+    }
     return;
   }
 

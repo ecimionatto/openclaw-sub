@@ -36,10 +36,18 @@ function extractTextContent(content) {
   return "";
 }
 
+function hasToolBlock(content) {
+  return Array.isArray(content) && content.some((c) => c && (c.type === "tool_result" || c.type === "tool_use"));
+}
+
 function isToolResultOrMeta(obj) {
   if (obj.isMeta || obj.isSidechain) return true;
   if (obj.type === "tool_use" || obj.type === "tool_result") return true;
-  if (Array.isArray(obj.content) && obj.content.some((c) => c && c.type === "tool_result")) return true;
+  if (hasToolBlock(obj.content)) return true;
+  // Native Claude: {type:'user', message:{role:'user', content:[{type:'tool_result',...}]}}
+  if (obj.message && hasToolBlock(obj.message.content)) return true;
+  // Codex response_item: {type:'response_item', payload:{type:'message', content:[...]}}
+  if (obj.payload && hasToolBlock(obj.payload.content)) return true;
   return false;
 }
 
@@ -99,7 +107,9 @@ function parseJsonlLines(filePath, fromLine = 0) {
           ? "user"
           : null;
 
-      if (role) turns.push({ role, content: text, timestamp: ts, sessionId, lineIdx: i });
+      const stopReason = "stop_reason" in msgObj ? msgObj.stop_reason : "stop_reason" in obj ? obj.stop_reason : undefined;
+
+      if (role) turns.push({ role, content: text, timestamp: ts, sessionId, lineIdx: i, stopReason });
     } catch {
       // malformed line — lastParsedLineIdx not advanced past it
     }
@@ -108,28 +118,46 @@ function parseJsonlLines(filePath, fromLine = 0) {
   return { turns, lastParsedLineIdx };
 }
 
-function pairTurns(turns) {
+function pairTurns(turns, lastParsedLineIdx = Infinity) {
   const pairs = [];
+  let heldBackAt = null; // lineIdx of user turn held back due to in-flight assistant
   let i = 0;
   while (i < turns.length) {
     if (turns[i].role === "user") {
       const userTurn = turns[i];
       let j = i + 1;
+
+      // Skip consecutive user turns (retried/interrupted prompts) — continue pairing later turns
+      if (j < turns.length && turns[j].role === "user") {
+        i += 1;
+        continue;
+      }
+
       const assistantParts = [];
-      // Aggregate consecutive assistant messages (multi-message / tool-using turns)
       while (j < turns.length && turns[j].role === "assistant") {
         assistantParts.push(turns[j]);
         j++;
       }
       if (assistantParts.length > 0) {
-        const response = assistantParts.map((a) => a.content).join("\n");
         const lastAssistant = assistantParts[assistantParts.length - 1];
+        // If the last assistant is at end of parsed window and stop_reason is explicitly
+        // absent (null/falsy) in a format that uses it (field present), it may be in-flight.
+        // Record userTurn.lineIdx so watermark can park before it for re-read on next sync.
+        const isAtEnd = lastAssistant.lineIdx + 1 >= lastParsedLineIdx;
+        const hasStopReasonField = lastAssistant.stopReason !== undefined;
+        if (isAtEnd && hasStopReasonField && !lastAssistant.stopReason) {
+          heldBackAt = userTurn.lineIdx;
+          break;
+        }
+
+        const response = assistantParts.map((a) => a.content).join("\n");
         pairs.push({
           prompt: userTurn.content,
           response,
           timestamp: userTurn.timestamp,
           sessionId: userTurn.sessionId || lastAssistant.sessionId,
           consumedLineIdx: lastAssistant.lineIdx + 1,
+          startLineIdx: userTurn.lineIdx,
         });
         i = j;
       } else {
@@ -140,7 +168,7 @@ function pairTurns(turns) {
       i += 1;
     }
   }
-  return pairs;
+  return { pairs, heldBackAt };
 }
 
 export function resolveTranscriptDirs(overrides = {}) {
@@ -161,20 +189,20 @@ export function harvestProvider(provider, dir, watermarks = {}) {
   for (const file of files) {
     const fromLine = watermarks[file] || 0;
     const { turns, lastParsedLineIdx } = parseJsonlLines(file, fromLine);
-    const pairs = pairTurns(turns);
+    const { pairs, heldBackAt } = pairTurns(turns, lastParsedLineIdx);
 
     for (const p of pairs) {
       newPairs.push({ ...p, provider, sourceFile: file });
     }
 
-    if (pairs.length > 0) {
-      // Advance only past the last consumed (fully paired) line
+    if (heldBackAt !== null) {
+      // In-flight assistant: park watermark at user turn so next sync re-reads from there
+      nextWatermarks[file] = heldBackAt;
+    } else if (pairs.length > 0) {
       nextWatermarks[file] = pairs[pairs.length - 1].consumedLineIdx;
     } else if (lastParsedLineIdx > fromLine) {
-      // Parsed lines but no pairs — may be all filtered (tool_result/meta) or in-flight user turn
       const lastTurn = turns[turns.length - 1];
       if (lastTurn && lastTurn.role === "user") {
-        // In-flight user turn — park watermark just before it so next sync re-reads it
         nextWatermarks[file] = lastTurn.lineIdx;
       } else {
         nextWatermarks[file] = lastParsedLineIdx;
