@@ -98,7 +98,7 @@ export function getProviderCooldown(state, providerId, now = new Date()) {
  * @returns {string | null} Matching window string, or null
  */
 export function findActiveTimeWindow(windows = [], now = new Date()) {
-  const curMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const curMinutes = now.getHours() * 60 + now.getMinutes();
   for (const win of windows) {
     const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(String(win).trim());
     if (!m) continue;

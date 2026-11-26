@@ -96,7 +96,7 @@ const SESSION_CATALOG_PROVIDERS = ["anthropic", "codex"];
  * @param {object} parsed
  * @returns {{ issues: string[], recommendations: string[] }}
  */
-export function inspectOpenClawJson(parsed) {
+export function inspectOpenClawJson(parsed, opts = {}) {
   const issues = [];
   const recommendations = [];
 
@@ -108,18 +108,34 @@ export function inspectOpenClawJson(parsed) {
         `openclaw.json: plugins.entries.${providerId}.config.sessionCatalog.enabled must be false for headless/cron use (currently: ${currentValue}).`
       );
       recommendations.push(
-        `Set plugins.entries.${providerId}.config.sessionCatalog.enabled = false in ~/.openclaw/openclaw.json (to refresh expired auth: openclaw models auth login --provider ${providerId})`
+        `Set plugins.entries.${providerId}.config.sessionCatalog.enabled = false in ~/.openclaw/openclaw.json`
+      );
+      recommendations.push(
+        `openclaw models auth login --provider ${providerId} --force`
       );
     }
   }
 
+  const homeDir = opts.homeDir || os.homedir();
   const loadPaths = Array.isArray(parsed?.plugins?.load?.paths) ? parsed.plugins.load.paths : [];
   for (const p of loadPaths) {
-    if (typeof p === "string" && !fs.existsSync(p)) {
+    if (typeof p !== "string") continue;
+    const expanded = p.startsWith("~") ? path.join(homeDir, p.slice(1)) : p;
+    if (!fs.existsSync(expanded)) {
       issues.push(
-        `openclaw.json: plugins.load.paths entry does not exist: ${p}. Update plugins.load.paths to valid binary paths.`
+        `openclaw.json: plugins.load.paths entry does not exist: ${p}. Update plugins.load.paths to valid plugin load paths.`
       );
     }
+  }
+
+  const hasAgyCli = loadPaths.some((p) => typeof p === "string" && p.includes("agy-cli"));
+  if (!hasAgyCli) {
+    issues.push(
+      "openclaw.json: plugins.load.paths does not include an agy-cli plugin path."
+    );
+    recommendations.push(
+      "Add the agy-cli plugin path to plugins.load.paths in ~/.openclaw/openclaw.json."
+    );
   }
 
   return { issues, recommendations };
@@ -183,7 +199,7 @@ export function runDoctor(opts = {}) {
   try {
     const parsedOcJson = readOpenClawJson(opts.homeDir);
     if (parsedOcJson !== null) {
-      openclawJson = inspectOpenClawJson(parsedOcJson);
+      openclawJson = inspectOpenClawJson(parsedOcJson, { homeDir: opts.homeDir });
       issues.push(...openclawJson.issues);
       recommendations.push(...openclawJson.recommendations);
     }
