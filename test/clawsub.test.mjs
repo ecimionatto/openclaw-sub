@@ -21,6 +21,7 @@ import {
   runDoctor,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -409,6 +410,51 @@ test("inspectOpenClawJson reports missing agy-cli plugin path when absent from l
     !res3.issues.some((i) => i === "openclaw.json: plugins.load.paths does not include an agy-cli plugin path."),
     "No missing-agy-cli issue when load.paths includes an agy-cli entry (may still report missing-file)"
   );
+});
+
+test("generateSystemdService produces a valid unit file with Restart=on-failure and PATH", () => {
+  const result = generateSystemdService({ workspace: "/home/user/myproject", nodeBinDir: "/usr/local/bin" });
+  assert.ok(typeof result.content === "string", "content must be a string");
+  assert.match(result.content, /Restart=on-failure/);
+  assert.match(result.content, /WantedBy=default\.target/);
+  assert.match(result.content, /WorkingDirectory=\/home\/user\/myproject/);
+  assert.match(result.content, /PATH=\/usr\/local\/bin:/);
+  assert.match(result.content, /ExecStart=\/usr\/local\/bin\/node/);
+  assert.equal(result.serviceName, "openclaw-sub");
+  assert.match(result.suggestedPath, /openclaw-sub\.service$/);
+});
+
+test("installSystemdService dry-run returns content and instructions without writing", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-"));
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    homeDir: tmpDir,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, true);
+  assert.match(result.content, /Restart=on-failure/);
+  assert.ok(Array.isArray(result.lingerInstructions));
+  assert.ok(result.lingerInstructions.some((l) => /loginctl enable-linger/.test(l)));
+  assert.ok(result.lingerInstructions.some((l) => /systemctl --user enable openclaw-sub/.test(l)));
+  assert.equal(fs.existsSync(result.servicePath), false, "dry-run must not write the file");
+});
+
+test("installSystemdService writes service file to correct path when not dry-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-write-"));
+  const result = installSystemdService({
+    workspace: tmpDir,
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    homeDir: tmpDir,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, false);
+  assert.equal(fs.existsSync(result.servicePath), true, "service file must be written");
+  const written = fs.readFileSync(result.servicePath, "utf8");
+  assert.match(written, /Restart=on-failure/);
+  assert.match(written, /WantedBy=default\.target/);
 });
 
 test("inspectOpenClawJson expands ~ paths before checking existence", () => {

@@ -23,6 +23,7 @@ import {
   installSkill,
   recordVersionSnapshot,
 } from "../src/versions.mjs";
+import { installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 function printHelp() {
   console.log(`🦞 clawsub (openclaw-sub v${CLAWSUB_VERSION})
@@ -31,6 +32,7 @@ Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemi
 Usage:
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
+  clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
   clawsub install-skill [--workspace <path>]
   clawsub version [--json]
   clawsub status [--json]
@@ -224,6 +226,36 @@ function cmdInstallUbuntu(flags) {
 
   recordVersionSnapshot(stateDir, "post-install-ubuntu");
   console.log(`✓ Installed: ${res.npmPackages.join(", ")}`);
+}
+
+function cmdInstallSystemd(flags) {
+  const stateDir = getDefaultStateDir();
+  const config = loadConfig(stateDir);
+  const workspace = flags.workspace || config.workspace || process.cwd();
+  const dryRun = Boolean(flags["dry-run"]);
+  const enable = Boolean(flags.enable);
+
+  const res = installSystemdService({ workspace, dryRun, enable });
+
+  if (dryRun) {
+    console.log("🦞 clawsub install-systemd (dry-run)\n");
+    console.log(`Service file: ${res.servicePath}\n`);
+    console.log(res.content);
+    console.log("Run these commands after writing the file:");
+    for (const cmd of res.lingerInstructions) {
+      console.log(`  $ ${cmd}`);
+    }
+    return;
+  }
+
+  console.log(`✓ Wrote systemd user service: ${res.servicePath}\n`);
+  console.log("To enable OpenClaw to survive reboots and SSH disconnects, run:");
+  for (const cmd of res.lingerInstructions) {
+    console.log(`  $ ${cmd}`);
+  }
+  console.log(
+    "\n💡 loginctl enable-linger ensures your systemd --user services start at boot without a login session."
+  );
 }
 
 function cmdInstallSkill(flags) {
@@ -478,6 +510,11 @@ function main() {
 
   if (subcmd === "install-skill") {
     cmdInstallSkill(flags);
+    return;
+  }
+
+  if (subcmd === "install-systemd") {
+    cmdInstallSystemd(flags);
     return;
   }
 
