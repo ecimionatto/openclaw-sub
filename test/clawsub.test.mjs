@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   CLAWSUB_VERSION,
@@ -30,7 +31,7 @@ test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini R
 });
 
 test("parseResetTime parses same-day, next-day, multi-day date, and relative durations", () => {
-  const now = new Date("2026-11-25T16:00:00Z");
+  const now = new Date(2026, 10, 25, 16, 0);
 
   // 1. Same-day time in future ("resets 6:50pm")
   const sameDay = parseResetTime("hit your 5-hour limit, resets 6:50pm", now);
@@ -61,7 +62,7 @@ test("parseResetTime parses same-day, next-day, multi-day date, and relative dur
 });
 
 test("computeCooldownUntil adds safety buffer to parsed reset time or falls back to default", () => {
-  const now = new Date("2026-11-25T16:00:00Z");
+  const now = new Date(2026, 10, 25, 16, 0);
   const withReset = computeCooldownUntil("resets 6:50pm", { now, bufferMinutes: 5 });
   assert.equal(withReset.getHours(), 18);
   assert.equal(withReset.getMinutes(), 55);
@@ -75,7 +76,7 @@ test("computeCooldownUntil adds safety buffer to parsed reset time or falls back
 
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
-  const now = new Date("2026-11-25T16:00:00Z");
+  const now = new Date(2026, 10, 25, 16, 0);
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -142,7 +143,7 @@ test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast
 
 test("routePrompt pauses heartbeats during quota reservation windows and when all CLIs are cooling down", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-hb-"));
-  const morningStandupWindow = new Date("2026-11-25T07:30:00Z");
+  const morningStandupWindow = new Date(2026, 10, 25, 7, 30);
   const config = {
     chain: ["claude", "codex"],
     workspace: tmpDir,
@@ -212,7 +213,7 @@ test("findActiveTimeWindow handles daytime and overnight windows", () => {
     "23:00-08:00"
   );
   assert.equal(
-    findActiveTimeWindow(["23:00-08:00"], new Date("2026-11-25T06:15:00Z")),
+    findActiveTimeWindow(["23:00-08:00"], new Date(2026, 10, 25, 6, 15)),
     "23:00-08:00"
   );
   assert.equal(
@@ -269,7 +270,7 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
 
 test("shared session baton passes context across models on credit exhaustion AND on primary recovery", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-baton-"));
-  const t1 = new Date("2026-11-25T10:00:00-05:00");
+  const t1 = new Date(2026, 10, 25, 10, 0);
   const config = {
     chain: ["claude", "codex", "agy"],
     workspace: tmpDir,
@@ -376,7 +377,7 @@ test("shared session baton passes context across models on credit exhaustion AND
 });
 
 test("agent discovery manifests exist and are well-formed", () => {
-  const root = path.resolve(new URL(".", import.meta.url).pathname, "..");
+  const root = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
   const llmsTxt = path.join(root, "llms.txt");
   assert.equal(fs.existsSync(llmsTxt), true, "llms.txt must exist");
@@ -400,4 +401,12 @@ test("agent discovery manifests exist and are well-formed", () => {
   assert.ok(Array.isArray(agentData.providers), "agent.json must have providers array");
   assert.equal(typeof agentData.skill_path, "string", "agent.json must have skill_path");
   assert.ok(agentData.repository && agentData.repository.url, "agent.json must have repository.url");
+
+  assert.equal(fs.existsSync(path.join(root, agentData.skill_path)), true, "agent.json skill_path must exist on disk");
+
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.equal(agentData.version, pkgJson.version, "agent.json version must match package.json");
+  assert.ok(pkgJson.files.includes(".well-known/"), "package.json files must include .well-known/");
+  assert.ok(pkgJson.files.includes("llms.txt"), "package.json files must include llms.txt");
+  assert.ok(pkgJson.files.includes("llms-full.txt"), "package.json files must include llms-full.txt");
 });

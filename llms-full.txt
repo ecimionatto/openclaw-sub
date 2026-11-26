@@ -72,7 +72,6 @@ Writes to: <workspace>/skills/clawsub/SKILL.md and <workspace>/.agents/skills/cl
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/.well-known/agent.json",
   "chain": ["claude", "codex", "agy"],
   "workspace": "/home/user/openclaw-workspace",
   "defaultCooldownMinutes": 60,
@@ -151,7 +150,7 @@ Add a `quietWindows` entry in `openclaw.json`:
 
 ### Session amnesia after failover
 Ensure `baton.enabled` is `true` in `openclaw.json` (default). Check baton files at
-`$HOME/.clawsub/baton-*.json`.
+`$HOME/.clawsub/clawsub-baton.json`.
 
 ---
 
