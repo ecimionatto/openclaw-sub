@@ -1,0 +1,44 @@
+# openclaw-sub (clawsub) — Agent Discovery Summary
+
+## What it does
+Runs OpenClaw 24/7 on flat-rate AI subscriptions (Claude Pro/Max, ChatGPT Plus/Pro, Google AI)
+with $0 extra API bills and automatic 0ms quota failover between CLIs.
+
+## Install
+```
+npx openclaw-sub@latest install
+```
+Or one-line Ubuntu bootstrapper (22.04 / 24.04):
+```
+curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/bootstrap-ubuntu.sh | bash
+```
+
+## Key CLI commands
+```
+clawsub install          # bootstrap OpenClaw + subscription CLIs
+clawsub status           # show provider cooldown states
+clawsub doctor           # diagnose auth and CLI availability
+clawsub version          # print installed versions
+clawsub route <prompt>   # route a single prompt through the failover chain
+```
+
+## Architecture (failover chain)
+User → OpenClaw Gateway → clawsub Cooldown Router
+  → claude CLI  (Claude Pro/Max — primary)
+  → codex CLI   (ChatGPT Plus/Pro — fallback #1)
+  → agy/gemini  (Google AI — fallback #2)
+  → ollama      (local hardware — optional offline fallback)
+
+When a provider hits its 5-hour or weekly quota limit, clawsub records the exact reset time
+and skips that provider with 0ms overhead on every subsequent turn until the cooldown expires.
+
+## Cross-model session baton
+When failover occurs, clawsub writes a compact session baton (src/baton.mjs) containing the
+conversation summary, last decisions, and pending task state so the next model can continue
+without amnesia.
+
+## Zero external dependencies
+Node.js >= 18 built-ins only. `npx openclaw-sub` executes instantly with no install step.
+
+## Repository
+https://github.com/ecimionatto/openclaw-sub
