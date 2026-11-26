@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getSessionBaton,
   loadBatonStore,
   saveBatonStore,
 } from "../src/baton.mjs";
-import { generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
+import { configureOpenClawJson, generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
 import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { routePrompt } from "../src/router.mjs";
 import {
   getDefaultStateDir,
@@ -162,7 +166,15 @@ function cmdInit(flags) {
   });
   const snap = recordVersionSnapshot(stateDir, "init");
 
+  const pluginDir = path.join(__dirname, "..", "plugins", "openclaw-agy-cli");
+  const ocJson = configureOpenClawJson({
+    chain: saved.chain,
+    workspace: saved.workspace,
+    pluginDir,
+  });
+
   console.log(`  ✓ Config saved:     ${stateDir}/clawsub.json`);
+  console.log(`  ✓ openclaw.json:    ${ocJson.path}${ocJson.backupPath ? ` (backup: ${path.basename(ocJson.backupPath)})` : ""}`);
   console.log(`  ✓ Profile saved:    ${integration.profilePath}`);
   console.log(`  ✓ Version snapshot: ${stateDir}/clawsub-versions.json (clawsub v${snap.clawsub})`);
   console.log(`  ✓ Router shim:      ${integration.routerWrapperPath}`);

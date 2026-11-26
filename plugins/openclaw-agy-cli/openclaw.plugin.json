@@ -1,0 +1,17 @@
+{
+  "id": "openclaw-agy-cli",
+  "name": "agy-cli Runner",
+  "version": "1.0.0",
+  "description": "Routes agy-cli (Antigravity/Gemini CLI) with headless-safe flags for OpenClaw subscription mode",
+  "runtime": "agy-cli",
+  "entrypoint": "./index.js",
+  "configSchema": {},
+  "flags": [
+    "--dangerously-skip-permissions",
+    "--disable-slash-commands",
+    "--settings",
+    "{\"allowNonWorkspaceAccess\":true}",
+    "--output-format",
+    "stream-json"
+  ]
+}

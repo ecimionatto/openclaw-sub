@@ -1,7 +1,90 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PROVIDERS, detectBinary, inspectProvider } from "./providers.mjs";
 import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState } from "./state.mjs";
+
+const RUNTIME_ID_MAP = { claude: "claude-cli", codex: "codex", agy: "agy-cli" };
+
+/**
+ * Backs up and merges ~/.openclaw/openclaw.json with agentRuntime, agents.defaults,
+ * sessionCatalog.enabled=false, and plugin load paths for subscription-CLI mode.
+ *
+ * @param {{
+ *   openclawConfigPath?: string,
+ *   chain?: string[],
+ *   workspace?: string,
+ *   pluginDir?: string,
+ * }} [opts]
+ */
+export function configureOpenClawJson(opts = {}) {
+  const {
+    openclawConfigPath = path.join(os.homedir(), ".openclaw", "openclaw.json"),
+    chain = ["claude", "codex", "agy"],
+    workspace = process.cwd(),
+    pluginDir,
+  } = opts;
+
+  fs.mkdirSync(path.dirname(openclawConfigPath), { recursive: true });
+
+  let existing = {};
+  let backupPath = null;
+  if (fs.existsSync(openclawConfigPath)) {
+    const raw = fs.readFileSync(openclawConfigPath, "utf8");
+    try {
+      existing = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(
+        `openclaw.json at ${openclawConfigPath} is not valid JSON — fix or remove it first.\n${e.message}`
+      );
+    }
+    backupPath = `${openclawConfigPath}.clawsub-${Date.now()}.bak`;
+    fs.copyFileSync(openclawConfigPath, backupPath);
+  }
+
+  const primaryRuntimeId = RUNTIME_ID_MAP[chain[0]] || chain[0];
+  const fallbackRuntimeIds = chain.slice(1).map((p) => RUNTIME_ID_MAP[p] || p);
+
+  const existingPlugins = existing.plugins || {};
+  const existingLoadPaths = (existingPlugins.load || {}).paths || [];
+  const loadPaths =
+    pluginDir && !existingLoadPaths.includes(pluginDir)
+      ? [...existingLoadPaths, pluginDir]
+      : existingLoadPaths;
+
+  const existingModels = ((existing.agents || {}).defaults || {}).models || {};
+  const newModels = {};
+  for (const prov of chain) {
+    const rid = RUNTIME_ID_MAP[prov] || prov;
+    newModels[rid] = { ...(existingModels[rid] || {}), agentRuntime: { id: rid } };
+  }
+  const mergedModels = { ...existingModels, ...newModels };
+
+  const pluginsUpdate = {
+    ...existingPlugins,
+    sessionCatalog: { ...(existingPlugins.sessionCatalog || {}), enabled: false },
+    ...(pluginDir || existingLoadPaths.length > 0
+      ? { load: { ...(existingPlugins.load || {}), paths: loadPaths } }
+      : {}),
+  };
+
+  const updated = {
+    ...existing,
+    agentRuntime: { ...(existing.agentRuntime || {}), id: primaryRuntimeId, workspace },
+    agents: {
+      ...(existing.agents || {}),
+      defaults: {
+        ...((existing.agents || {}).defaults || {}),
+        model: { primary: primaryRuntimeId, fallbacks: fallbackRuntimeIds },
+        models: mergedModels,
+      },
+    },
+    plugins: pluginsUpdate,
+  };
+
+  fs.writeFileSync(openclawConfigPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
+  return { path: openclawConfigPath, backupPath, config: updated };
+}
 
 /**
  * Generates an OpenClaw-compatible CLI runner configuration and wrapper script
