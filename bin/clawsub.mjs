@@ -4,6 +4,7 @@ import {
   getSessionBaton,
   loadBatonStore,
   saveBatonStore,
+  syncNativeTranscripts,
 } from "../src/baton.mjs";
 import { generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
 import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
@@ -34,7 +35,7 @@ Usage:
   clawsub install-skill [--workspace <path>]
   clawsub version [--json]
   clawsub status [--json]
-  clawsub baton [--session <key>] [--clear] [--json]
+  clawsub baton [--session <key>] [--clear] [--sync] [--json]
   clawsub doctor [--json]
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
@@ -415,6 +416,17 @@ function cmdBaton(flags) {
     delete store.sessions[sessionKey];
     saveBatonStore(store, stateDir);
     console.log(`✓ Cleared shared session baton for session '${sessionKey}'`);
+    return;
+  }
+
+  if (flags.sync) {
+    const result = syncNativeTranscripts(store, { sessionKey });
+    saveBatonStore(store, stateDir);
+    if (flags.json) {
+      console.log(JSON.stringify({ imported: result.imported, watermarks: store.harvestWatermarks }, null, 2));
+    } else {
+      console.log(`✓ Synced native CLI transcripts into baton (${result.imported} turn pairs imported)`);
+    }
     return;
   }
 

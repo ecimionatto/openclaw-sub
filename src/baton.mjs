@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { getDefaultStateDir } from "./state.mjs";
+import { harvestAll } from "./transcript-harvester.mjs";
 
 const MAX_TURNS_STORED = 30;
 const MAX_HANDOFF_TURNS = 8;
@@ -23,6 +24,7 @@ export function loadBatonStore(stateDir = getDefaultStateDir()) {
     return {
       sessions: raw.sessions || {},
       updatedAt: raw.updatedAt || null,
+      harvestWatermarks: raw.harvestWatermarks || {},
     };
   } catch {
     return { sessions: {}, updatedAt: null };
@@ -219,6 +221,59 @@ export function buildSessionHandoffHeader(store, { sessionKey = "main", targetPr
 
   lines.push("[END CLAWSUB SESSION BATON]", "");
   return lines.join("\n");
+}
+
+/**
+ * Harvests native CLI transcripts and merges new turn pairs into the baton store.
+ * Watermarks are persisted in `store.harvestWatermarks` to avoid re-importing.
+ */
+export function syncNativeTranscripts(
+  store,
+  { sessionKey = "main", transcriptDirs = {}, now = new Date(), maxInitialBackfill = 30 } = {}
+) {
+  const watermarks = store.harvestWatermarks || {};
+  const isInitialSync = Object.keys(watermarks).length === 0;
+
+  const { pairs, watermarks: nextWatermarks } = harvestAll({ transcriptDirs, watermarks });
+  store.harvestWatermarks = nextWatermarks;
+
+  // Sort chronologically so the 30-turn cap keeps the latest delta, not arbitrary order
+  const sorted = [...pairs].sort((a, b) => {
+    const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return ta - tb;
+  });
+
+  const toImport = isInitialSync ? sorted.slice(-maxInitialBackfill) : sorted;
+
+  // Strip the session baton handoff header that clawsub run/exec may have prepended
+  // so decorated and plain prompts produce the same dedup fingerprint.
+  const HANDOFF_HEADER_RE = /^\[CLAWSUB SHARED SESSION BATON[^\]]*\][\s\S]*?\[END CLAWSUB SESSION BATON\]\n?/;
+  const normalizePrompt = (s) => (s || "").replace(HANDOFF_HEADER_RE, "").trimStart();
+
+  // Deduplicate against turns already recorded by clawsub run/exec
+  const session = getSessionBaton(store, sessionKey);
+  const existingFingerprints = new Set(
+    session.turns.map((t) => `${normalizePrompt(t.prompt)}|${t.response}`)
+  );
+
+  let imported = 0;
+  for (const p of toImport) {
+    const fp = `${normalizePrompt(p.prompt)}|${p.response}`;
+    if (existingFingerprints.has(fp)) continue;
+    existingFingerprints.add(fp);
+    recordCompletedTurn(store, {
+      sessionKey,
+      provider: p.provider,
+      nativeSessionId: p.sessionId,
+      prompt: p.prompt,
+      response: p.response,
+      now: p.timestamp ? new Date(p.timestamp) : now,
+    });
+    imported++;
+  }
+
+  return { imported };
 }
 
 /**

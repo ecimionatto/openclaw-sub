@@ -21,6 +21,8 @@ import {
   runDoctor,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { harvestAll, harvestProvider, resolveTranscriptDirs } from "../src/transcript-harvester.mjs";
+import { loadBatonStore, saveBatonStore, syncNativeTranscripts, recordCompletedTurn } from "../src/baton.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -349,6 +351,308 @@ test("runDoctor skips openclaw.json checks gracefully when file is absent", () =
   assert.equal(report.openclawJson, null, "openclawJson should be null when file missing");
 });
 
+test("transcript-harvester: resolveTranscriptDirs returns overridable paths", () => {
+  const dirs = resolveTranscriptDirs({ claude: "/tmp/claude", codex: "/tmp/codex" });
+  assert.equal(dirs.claude, "/tmp/claude");
+  assert.equal(dirs.codex, "/tmp/codex");
+  assert.match(dirs.gemini, /antigravity-cli/);
+});
+
+test("transcript-harvester: harvestProvider reads claude-format JSONL and pairs user/assistant turns", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-harvest-"));
+  const sessionDir = path.join(tmpDir, "proj123");
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const lines = [
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "Hello from claude" }] }, sessionId: "s1", createdAt: "2026-01-01T10:00:00Z" }),
+    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Hi there!" }] }, sessionId: "s1", createdAt: "2026-01-01T10:00:01Z" }),
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "Second question" }] }, sessionId: "s1", createdAt: "2026-01-01T10:00:02Z" }),
+    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Second answer" }] }, sessionId: "s1", createdAt: "2026-01-01T10:00:03Z" }),
+  ].join("\n");
+
+  const filePath = path.join(sessionDir, "session.jsonl");
+  fs.writeFileSync(filePath, lines + "\n");
+
+  const { pairs, watermarks } = harvestProvider("claude", tmpDir, {});
+  assert.equal(pairs.length, 2);
+  assert.equal(pairs[0].provider, "claude");
+  assert.equal(pairs[0].prompt, "Hello from claude");
+  assert.equal(pairs[0].response, "Hi there!");
+  assert.equal(pairs[1].prompt, "Second question");
+  assert.equal(pairs[1].response, "Second answer");
+  assert.equal(watermarks[filePath], 4);
+});
+
+test("transcript-harvester: harvestProvider reads gemini-format JSONL with parts array", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-gemini-"));
+  const brainDir = path.join(tmpDir, "brain", "sess-abc");
+  fs.mkdirSync(brainDir, { recursive: true });
+
+  const lines = [
+    JSON.stringify({ role: "user", parts: [{ text: "What is clawsub?" }], timestamp: "2026-01-01T12:00:00Z" }),
+    JSON.stringify({ role: "model", parts: [{ text: "clawsub is a CLI tool." }], timestamp: "2026-01-01T12:00:01Z" }),
+  ].join("\n");
+
+  fs.writeFileSync(path.join(brainDir, "transcript.jsonl"), lines + "\n");
+
+  const { pairs } = harvestProvider("gemini", tmpDir, {});
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].provider, "gemini");
+  assert.equal(pairs[0].prompt, "What is clawsub?");
+  assert.equal(pairs[0].response, "clawsub is a CLI tool.");
+});
+
+test("transcript-harvester: harvestProvider reads codex-format JSONL with plain role/content fields", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-codex-"));
+  const sessionDir = path.join(tmpDir, "sess-xyz");
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const lines = [
+    JSON.stringify({ role: "user", content: "Explain the baton", timestamp: "2026-01-01T14:00:00Z", session_id: "xyz" }),
+    JSON.stringify({ role: "assistant", content: "The baton passes context between providers.", timestamp: "2026-01-01T14:00:02Z", session_id: "xyz" }),
+  ].join("\n");
+
+  fs.writeFileSync(path.join(sessionDir, "session.jsonl"), lines + "\n");
+
+  const { pairs } = harvestProvider("codex", tmpDir, {});
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].provider, "codex");
+  assert.equal(pairs[0].prompt, "Explain the baton");
+  assert.equal(pairs[0].response, "The baton passes context between providers.");
+});
+
+test("transcript-harvester: watermarks prevent re-harvesting already-seen turns", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-wm-"));
+  const sessionDir = path.join(tmpDir, "proj999");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const filePath = path.join(sessionDir, "session.jsonl");
+
+  const line1 = JSON.stringify({ role: "user", content: "Turn 1", timestamp: "2026-01-01T10:00:00Z" });
+  const line2 = JSON.stringify({ role: "assistant", content: "Reply 1", timestamp: "2026-01-01T10:00:01Z" });
+  fs.writeFileSync(filePath, [line1, line2].join("\n") + "\n");
+
+  const { pairs: pairs1, watermarks: wm1 } = harvestProvider("claude", tmpDir, {});
+  assert.equal(pairs1.length, 1);
+  assert.equal(wm1[filePath], 2);
+
+  // Append more turns
+  const line3 = JSON.stringify({ role: "user", content: "Turn 2", timestamp: "2026-01-01T10:01:00Z" });
+  const line4 = JSON.stringify({ role: "assistant", content: "Reply 2", timestamp: "2026-01-01T10:01:01Z" });
+  fs.appendFileSync(filePath, [line3, line4].join("\n") + "\n");
+
+  // Re-harvest with existing watermarks — should only get new turns
+  const { pairs: pairs2, watermarks: wm2 } = harvestProvider("claude", tmpDir, wm1);
+  assert.equal(pairs2.length, 1);
+  assert.equal(pairs2[0].prompt, "Turn 2");
+  assert.equal(wm2[filePath], 4);
+
+  // Re-harvest again with current watermarks — nothing new
+  const { pairs: pairs3 } = harvestProvider("claude", tmpDir, wm2);
+  assert.equal(pairs3.length, 0);
+});
+
+test("transcript-harvester: harvestAll aggregates from multiple provider dirs", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-all-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  const codexDir = path.join(tmpDir, "codex");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.mkdirSync(codexDir, { recursive: true });
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "Claude Q" }),
+      JSON.stringify({ role: "assistant", content: "Claude A" }),
+    ].join("\n") + "\n"
+  );
+  fs.writeFileSync(path.join(codexDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "Codex Q" }),
+      JSON.stringify({ role: "assistant", content: "Codex A" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs } = harvestAll({
+    transcriptDirs: { claude: claudeDir, codex: codexDir, gemini: path.join(tmpDir, "gemini-missing") },
+    watermarks: {},
+  });
+
+  assert.equal(pairs.length, 2);
+  const providers = pairs.map((p) => p.provider).sort();
+  assert.deepEqual(providers, ["claude", "codex"]);
+});
+
+test("transcript-harvester: harvestAll tolerates missing or empty dirs", () => {
+  const { pairs, watermarks } = harvestAll({
+    transcriptDirs: {
+      claude: "/nonexistent/claude",
+      codex: "/nonexistent/codex",
+      gemini: "/nonexistent/gemini",
+    },
+    watermarks: {},
+  });
+  assert.equal(pairs.length, 0);
+  assert.deepEqual(watermarks, {});
+});
+
+test("transcript-harvester: harvestAll skips malformed JSONL lines gracefully", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-malformed-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  const lines = [
+    "{ INVALID JSON !!!",
+    JSON.stringify({ role: "user", content: "Valid turn" }),
+    JSON.stringify({ role: "assistant", content: "Valid reply" }),
+    "{ also broken",
+  ].join("\n") + "\n";
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"), lines);
+
+  const { pairs } = harvestAll({
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+    watermarks: {},
+  });
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].prompt, "Valid turn");
+});
+
+test("syncNativeTranscripts merges harvested turns into baton store and persists watermarks", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-sync-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "Synced prompt", timestamp: "2026-01-01T10:00:00Z", sessionId: "native-1" }),
+      JSON.stringify({ role: "assistant", content: "Synced response", timestamp: "2026-01-01T10:00:01Z", sessionId: "native-1" }),
+    ].join("\n") + "\n"
+  );
+
+  const store = loadBatonStore(tmpDir);
+  const { imported } = syncNativeTranscripts(store, {
+    sessionKey: "main",
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+  });
+  saveBatonStore(store, tmpDir);
+
+  assert.equal(imported, 1);
+  const saved = loadBatonStore(tmpDir);
+  assert.equal(saved.sessions.main.turnCounter, 1);
+  assert.equal(saved.sessions.main.turns[0].provider, "claude");
+  assert.equal(saved.sessions.main.turns[0].prompt, "Synced prompt");
+  assert.match(saved.sessions.main.turns[0].response, /Synced response/);
+  const savedFilePath = Object.keys(saved.harvestWatermarks)[0];
+  assert.ok(savedFilePath, "harvestWatermarks should contain at least one file path");
+  assert.ok(saved.harvestWatermarks[savedFilePath] > 0, "per-file watermark should be advanced past line 0");
+
+  // Re-sync should import nothing new (watermark-based, not just dedup)
+  const store2 = loadBatonStore(tmpDir);
+  const { imported: imported2 } = syncNativeTranscripts(store2, {
+    sessionKey: "main",
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+  });
+  assert.equal(imported2, 0, "Re-sync should not re-import already-seen turns via watermarks");
+});
+
+test("transcript-harvester: tool_result in native Claude message.content is filtered, not imported as user prompt", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-toolresult-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      // Native Claude shape: tool_result in message.content — should be filtered
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: "result text" }] } }),
+      JSON.stringify({ role: "user", content: "Real question" }),
+      JSON.stringify({ role: "assistant", content: "Real answer", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs.length, 1, "tool_result entry should be filtered, not imported as a user turn");
+  assert.equal(pairs[0].prompt, "Real question");
+  assert.equal(pairs[0].response, "Real answer");
+});
+
+test("transcript-harvester: user,user,assistant skips retried prompt and continues pairing", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-useruserast-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "First attempt (retried)" }),
+      JSON.stringify({ role: "user", content: "Second attempt" }),
+      JSON.stringify({ role: "assistant", content: "Reply to second", stop_reason: "end_turn" }),
+      JSON.stringify({ role: "user", content: "Follow-up" }),
+      JSON.stringify({ role: "assistant", content: "Follow-up reply", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs.length, 2, "should emit pairs for both user2+assistant and follow-up");
+  assert.equal(pairs[0].prompt, "Second attempt");
+  assert.equal(pairs[1].prompt, "Follow-up");
+});
+
+test("transcript-harvester: holds back incomplete trailing pair, captures second assistant on next sync", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-partial-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const filePath = path.join(claudeDir, "s.jsonl");
+
+  // Sync 1: user + partial assistant — stop_reason: null signals in-flight in native Claude format
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "Long question" }),
+      JSON.stringify({ role: "assistant", content: "Partial...", stop_reason: null }),
+    ].join("\n") + "\n"
+  );
+
+  const wm1 = {};
+  const { pairs: pairs1, watermarks: wm2 } = harvestProvider("claude", claudeDir, wm1);
+  assert.equal(pairs1.length, 0, "in-flight assistant (stop_reason:null at EOF) should be held back");
+
+  // Sync 2: second assistant chunk appended, this one has stop_reason
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "Long question" }),
+      JSON.stringify({ role: "assistant", content: "Partial...", stop_reason: null }),
+      JSON.stringify({ role: "assistant", content: "...completed.", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs2 } = harvestProvider("claude", claudeDir, wm2);
+  assert.equal(pairs2.length, 1, "completed pair should be emitted after second assistant chunk");
+  assert.ok(pairs2[0].response.includes("Partial..."), "response should include first chunk");
+  assert.ok(pairs2[0].response.includes("...completed."), "response should include second chunk");
+});
+
+test("syncNativeTranscripts: dedup strips handoff header before comparing fingerprints", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-dedup-hdr-"));
+  const store = { sessions: {}, harvestWatermarks: {} };
+
+  // Simulate a turn already in the baton from clawsub run/exec with a handoff header
+  const decoratedPrompt = "[CLAWSUB SHARED SESSION BATON — HANDOFF TO CLAUDE]\nYou are continuing...\n[END CLAWSUB SESSION BATON]\nPlain question";
+  recordCompletedTurn(store, { provider: "claude", prompt: decoratedPrompt, response: "The answer" });
+
+  // Native transcript has the plain (undecorated) prompt
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"),
+    [
+      JSON.stringify({ role: "user", content: "Plain question" }),
+      JSON.stringify({ role: "assistant", content: "The answer", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { imported } = syncNativeTranscripts(store, {
+    sessionKey: "main",
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+  });
+  assert.equal(imported, 0, "plain prompt from transcript should match decorated stored prompt after stripping header");
+});
+
 test("runDoctor reports an issue for malformed openclaw.json (not silently skipped)", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-malformed-"));
   const openclawDir = path.join(tmpDir, ".openclaw");
@@ -531,4 +835,312 @@ test("shared session baton passes context across models on credit exhaustion AND
   assert.match(claudeRecoveryPrompt.prompt, /CLAWSUB SHARED SESSION BATON — HANDOFF TO CLAUDE/);
   assert.match(claudeRecoveryPrompt.prompt, /\[Turn #2 via codex\]/);
   assert.match(claudeRecoveryPrompt.prompt, /Finished step 2 in src\/state\.mjs and added unit tests/);
+});
+
+test("transcript-harvester: watermark does not advance past in-flight user turn (mid-sync)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-inflight-"));
+  const sessionDir = path.join(tmpDir, "proj-inflight");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const filePath = path.join(sessionDir, "session.jsonl");
+
+  const userLine = JSON.stringify({ role: "user", content: "In-flight question", timestamp: "2026-01-01T11:00:00Z" });
+  // Write only the user line (no assistant reply yet)
+  fs.writeFileSync(filePath, userLine + "\n");
+
+  const { pairs: pairs1, watermarks: wm1 } = harvestProvider("claude", tmpDir, {});
+  assert.equal(pairs1.length, 0, "No pairs when assistant hasn't replied yet");
+  // Watermark must stay before the user line so next sync re-reads it
+  assert.equal((wm1[filePath] || 0), 0, "Watermark must not advance past in-flight user turn");
+
+  // Now the assistant replies
+  const assistantLine = JSON.stringify({ role: "assistant", content: "Here is the answer", timestamp: "2026-01-01T11:00:02Z" });
+  fs.appendFileSync(filePath, assistantLine + "\n");
+
+  const { pairs: pairs2, watermarks: wm2 } = harvestProvider("claude", tmpDir, wm1);
+  assert.equal(pairs2.length, 1, "Pair must be harvested after assistant replies");
+  assert.equal(pairs2[0].prompt, "In-flight question");
+  assert.equal(pairs2[0].response, "Here is the answer");
+  assert.equal(wm2[filePath], 2);
+});
+
+test("transcript-harvester: unterminated trailing line is excluded from watermark", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-partial-"));
+  const sessionDir = path.join(tmpDir, "proj-partial");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const filePath = path.join(sessionDir, "session.jsonl");
+
+  const line1 = JSON.stringify({ role: "user", content: "Complete user", timestamp: "2026-01-01T12:00:00Z" });
+  const line2 = JSON.stringify({ role: "assistant", content: "Complete reply", timestamp: "2026-01-01T12:00:01Z" });
+  const partial = '{"role":"user","content":"Partial writ';
+
+  // Write two complete lines then a partial line (no trailing newline)
+  fs.writeFileSync(filePath, [line1, line2, partial].join("\n"));
+
+  const { pairs, watermarks } = harvestProvider("claude", tmpDir, {});
+  assert.equal(pairs.length, 1, "Should parse the complete pair");
+  assert.equal(pairs[0].prompt, "Complete user");
+  // Watermark must not include the partial line index
+  assert.equal(watermarks[filePath], 2);
+
+  // Simulate completing the write
+  fs.writeFileSync(filePath, [line1, line2, partial + '", "timestamp":"2026-01-01T12:00:02Z"}'].join("\n") + "\n");
+  const { pairs: pairs2 } = harvestProvider("claude", tmpDir, watermarks);
+  assert.equal(pairs2.length, 0, "Partial user line without reply should not create a pair");
+});
+
+test("transcript-harvester: tool_result entries are skipped and not imported as user prompts", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-toolresult-"));
+  const sessionDir = path.join(tmpDir, "proj-tool");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const filePath = path.join(sessionDir, "session.jsonl");
+
+  const lines = [
+    JSON.stringify({ role: "user", content: "Real question", timestamp: "2026-01-01T13:00:00Z" }),
+    // tool_result entry — role='user' but content is a tool result array
+    JSON.stringify({ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "tool output" }], timestamp: "2026-01-01T13:00:01Z" }),
+    JSON.stringify({ role: "assistant", content: "Real answer", timestamp: "2026-01-01T13:00:02Z" }),
+    // isMeta entry
+    JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: "meta content" }, timestamp: "2026-01-01T13:00:03Z" }),
+  ].join("\n") + "\n";
+
+  fs.writeFileSync(filePath, lines);
+
+  const { pairs } = harvestProvider("claude", tmpDir, {});
+  assert.equal(pairs.length, 1, "Only one real pair should be imported");
+  assert.equal(pairs[0].prompt, "Real question");
+  assert.equal(pairs[0].response, "Real answer");
+});
+
+test("transcript-harvester: consecutive assistant messages are aggregated into one response", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-multiasst-"));
+  const sessionDir = path.join(tmpDir, "proj-multi");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const filePath = path.join(sessionDir, "session.jsonl");
+
+  const lines = [
+    JSON.stringify({ role: "user", content: "Multi-step question", timestamp: "2026-01-01T14:00:00Z" }),
+    JSON.stringify({ role: "assistant", content: "Step 1 response", timestamp: "2026-01-01T14:00:01Z" }),
+    JSON.stringify({ role: "assistant", content: "Step 2 response", timestamp: "2026-01-01T14:00:02Z" }),
+  ].join("\n") + "\n";
+
+  fs.writeFileSync(filePath, lines);
+
+  const { pairs } = harvestProvider("claude", tmpDir, {});
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].prompt, "Multi-step question");
+  assert.match(pairs[0].response, /Step 1 response/);
+  assert.match(pairs[0].response, /Step 2 response/);
+});
+
+test("transcript-harvester: Codex rollout response_item/payload shape is parsed", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-codex-rollout-"));
+  const sessionDir = path.join(tmpDir, "sess-rollout");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const filePath = path.join(sessionDir, "session.jsonl");
+
+  const lines = [
+    JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: "Rollout user question" }, timestamp: "2026-01-01T15:00:00Z" }),
+    JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: "Rollout assistant answer" }, timestamp: "2026-01-01T15:00:01Z" }),
+  ].join("\n") + "\n";
+
+  fs.writeFileSync(filePath, lines);
+
+  const { pairs } = harvestProvider("codex", tmpDir, {});
+  assert.equal(pairs.length, 1, "Codex rollout payload shape must be parsed");
+  assert.equal(pairs[0].prompt, "Rollout user question");
+  assert.equal(pairs[0].response, "Rollout assistant answer");
+  assert.equal(pairs[0].provider, "codex");
+});
+
+test("transcript-harvester: Antigravity USER_INPUT/PLANNER_RESPONSE types are mapped correctly", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-antigravity-"));
+  const brainDir = path.join(tmpDir, "sess-antigravity");
+  fs.mkdirSync(brainDir, { recursive: true });
+
+  const lines = [
+    JSON.stringify({ type: "USER_INPUT", content: "Antigravity user message", timestamp: "2026-01-01T16:00:00Z" }),
+    JSON.stringify({ type: "PLANNER_RESPONSE", content: "Antigravity planner reply", timestamp: "2026-01-01T16:00:01Z" }),
+  ].join("\n") + "\n";
+
+  fs.writeFileSync(path.join(brainDir, "transcript.jsonl"), lines);
+
+  const { pairs } = harvestProvider("gemini", tmpDir, {});
+  assert.equal(pairs.length, 1, "Antigravity USER_INPUT/PLANNER_RESPONSE must be mapped to user/assistant");
+  assert.equal(pairs[0].prompt, "Antigravity user message");
+  assert.equal(pairs[0].response, "Antigravity planner reply");
+});
+
+test("transcript-harvester: Gemini provider only reads transcript.jsonl files", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-gemini-filter-"));
+  const brainDir = path.join(tmpDir, "sess-brain");
+  fs.mkdirSync(brainDir, { recursive: true });
+
+  const transcriptContent = [
+    JSON.stringify({ role: "user", parts: [{ text: "Real gemini question" }], timestamp: "2026-01-01T17:00:00Z" }),
+    JSON.stringify({ role: "model", parts: [{ text: "Real gemini answer" }], timestamp: "2026-01-01T17:00:01Z" }),
+  ].join("\n") + "\n";
+
+  // Write transcript.jsonl (should be read) and other.jsonl (should be ignored)
+  fs.writeFileSync(path.join(brainDir, "transcript.jsonl"), transcriptContent);
+  fs.writeFileSync(path.join(brainDir, "other.jsonl"),
+    JSON.stringify({ role: "user", parts: [{ text: "Should be ignored" }] }) + "\n" +
+    JSON.stringify({ role: "model", parts: [{ text: "Should also be ignored" }] }) + "\n"
+  );
+
+  const { pairs } = harvestProvider("gemini", tmpDir, {});
+  assert.equal(pairs.length, 1, "Gemini provider must only read transcript.jsonl");
+  assert.equal(pairs[0].prompt, "Real gemini question");
+});
+
+test("syncNativeTranscripts deduplicates turns already recorded by clawsub run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-dedup-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  const content = [
+    JSON.stringify({ role: "user", content: "Duplicate prompt", timestamp: "2026-01-01T10:00:00Z", sessionId: "s1" }),
+    JSON.stringify({ role: "assistant", content: "Duplicate response", timestamp: "2026-01-01T10:00:01Z", sessionId: "s1" }),
+  ].join("\n") + "\n";
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"), content);
+
+  const store = loadBatonStore(tmpDir);
+
+  // Simulate a turn already recorded by clawsub run/exec
+  recordCompletedTurn(store, {
+    sessionKey: "main",
+    provider: "claude",
+    prompt: "Duplicate prompt",
+    response: "Duplicate response",
+  });
+  assert.equal(store.sessions.main.turnCounter, 1);
+
+  // Now sync — should detect duplicate and not add it again
+  const { imported } = syncNativeTranscripts(store, {
+    sessionKey: "main",
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+  });
+
+  assert.equal(imported, 0, "Duplicate turn must not be re-imported");
+  assert.equal(store.sessions.main.turnCounter, 1, "Turn counter must not increase for duplicates");
+});
+
+test("syncNativeTranscripts sorts by timestamp and bounds initial backfill", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-backfill-"));
+  const claudeDir = path.join(tmpDir, "claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  // Create 5 turn pairs with timestamps in reverse order in the file
+  const lines = [];
+  for (let i = 5; i >= 1; i--) {
+    lines.push(JSON.stringify({ role: "user", content: `Q${i}`, timestamp: `2026-01-0${i}T10:00:00Z` }));
+    lines.push(JSON.stringify({ role: "assistant", content: `A${i}`, timestamp: `2026-01-0${i}T10:00:01Z` }));
+  }
+  fs.writeFileSync(path.join(claudeDir, "s.jsonl"), lines.join("\n") + "\n");
+
+  const store = loadBatonStore(tmpDir);
+  // maxInitialBackfill=3 — should import the 3 newest turns (Q3, Q4, Q5)
+  const { imported } = syncNativeTranscripts(store, {
+    sessionKey: "main",
+    transcriptDirs: { claude: claudeDir, codex: "/nonexistent", gemini: "/nonexistent" },
+    maxInitialBackfill: 3,
+  });
+
+  assert.equal(imported, 3, "Should import at most maxInitialBackfill turns on initial sync");
+  // Turns should be in chronological order (oldest first within the import)
+  const prompts = store.sessions.main.turns.map((t) => t.prompt);
+  assert.equal(prompts[0], "Q3");
+  assert.equal(prompts[1], "Q4");
+  assert.equal(prompts[2], "Q5");
+});
+
+test("transcript-harvester: native nested message.stop_reason triggers in-flight holdback", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-nested-sr-"));
+  const claudeDir = path.join(tmpDir, "sess");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const filePath = path.join(claudeDir, "s.jsonl");
+
+  // Native Claude shape: stop_reason nested under message — null means in-flight
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "Native question" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Native partial", stop_reason: null } }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs1, watermarks: wm1 } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs1.length, 0, "nested message.stop_reason:null must trigger in-flight holdback");
+
+  // Append a completed assistant with stop_reason:end_turn nested under message
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "Native question" } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Native partial", stop_reason: null } }),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Native final", stop_reason: "end_turn" } }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs2 } = harvestProvider("claude", claudeDir, wm1);
+  assert.equal(pairs2.length, 1, "completed native pair must be emitted after terminal stop_reason");
+  assert.ok(pairs2[0].response.includes("Native partial"));
+  assert.ok(pairs2[0].response.includes("Native final"));
+});
+
+test("transcript-harvester: tool_use stop_reason is non-terminal, held back; two-sync tool-loop emits one complete pair", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-toolloop-"));
+  const claudeDir = path.join(tmpDir, "sess");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const filePath = path.join(claudeDir, "s.jsonl");
+
+  // Sync 1: user asks, assistant replies with mixed text+tool_use and stop_reason:'tool_use' (non-terminal)
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "What is 2+2?" }),
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Let me calculate." }, { type: "tool_use", id: "t1", name: "calc", input: {} }], stop_reason: "tool_use" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs1, watermarks: wm2 } = harvestProvider("claude", claudeDir, {});
+  assert.equal(pairs1.length, 0, "stop_reason:tool_use is non-terminal and must be held back");
+
+  // Sync 2: tool_result + final assistant answer appended
+  fs.writeFileSync(filePath,
+    [
+      JSON.stringify({ role: "user", content: "What is 2+2?" }),
+      JSON.stringify({ role: "assistant", content: [{ type: "text", text: "Let me calculate." }, { type: "tool_use", id: "t1", name: "calc", input: {} }], stop_reason: "tool_use" }),
+      JSON.stringify({ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "4" }] }),
+      JSON.stringify({ role: "assistant", content: "The answer is 4.", stop_reason: "end_turn" }),
+    ].join("\n") + "\n"
+  );
+
+  const { pairs: pairs2 } = harvestProvider("claude", claudeDir, wm2);
+  assert.equal(pairs2.length, 1, "completed tool loop should emit one pair");
+  assert.equal(pairs2[0].prompt, "What is 2+2?");
+  assert.ok(pairs2[0].response.includes("Let me calculate."), "text from mixed tool_use turn must be preserved");
+  assert.ok(pairs2[0].response.includes("The answer is 4."), "final answer must be included");
+});
+
+test("transcript-harvester: unreadable subdirectory does not abort the whole sync", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-unreadable-"));
+  const readableDir = path.join(tmpDir, "readable");
+  const unreadableDir = path.join(tmpDir, "unreadable");
+  fs.mkdirSync(readableDir, { recursive: true });
+  fs.mkdirSync(unreadableDir, { recursive: true });
+
+  fs.writeFileSync(path.join(readableDir, "s.jsonl"),
+    JSON.stringify({ role: "user", content: "Good question" }) + "\n" +
+    JSON.stringify({ role: "assistant", content: "Good answer", stop_reason: "end_turn" }) + "\n"
+  );
+  fs.writeFileSync(path.join(unreadableDir, "s.jsonl"),
+    JSON.stringify({ role: "user", content: "Blocked question" }) + "\n" +
+    JSON.stringify({ role: "assistant", content: "Blocked answer", stop_reason: "end_turn" }) + "\n"
+  );
+  fs.chmodSync(unreadableDir, 0o000);
+
+  try {
+    const { pairs } = harvestProvider("claude", tmpDir, {});
+    assert.equal(pairs.length, 1, "readable dir must still be processed when a sibling subdir is unreadable");
+    assert.equal(pairs[0].prompt, "Good question");
+  } finally {
+    fs.chmodSync(unreadableDir, 0o755);
+  }
 });
