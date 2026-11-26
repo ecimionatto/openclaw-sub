@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -440,6 +441,30 @@ test("generateSystemdService escapes percent signs and spaces in paths", () => {
   assert.match(result.content, /WorkingDirectory=.*my project/, "literal space must be preserved in WorkingDirectory");
   assert.match(result.content, /WorkingDirectory=.*%%test/, "percent must be doubled to %%");
   assert.doesNotMatch(result.content, /WorkingDirectory=.*\\x20/, "\\x20 must not appear in WorkingDirectory");
+});
+
+test("generateSystemdService escapes percent signs and spaces in nodeBinDir for Environment=PATH", () => {
+  const result = generateSystemdService({
+    workspace: "/home/user/project",
+    nodeBinDir: "/home/user/my node%bin",
+  });
+  assert.match(result.content, /Environment=.*\\x20/, "space in nodeBinDir must become \\x20 in Environment=");
+  assert.match(result.content, /Environment=.*%%bin/, "percent in nodeBinDir must be doubled to %%");
+});
+
+test("install-systemd --enable exits 1 when systemctl fails", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-exit1-"));
+  const fakeSystemctl = path.join(tmpDir, "systemctl");
+  fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+  const binPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--enable", `--workspace=${tmpDir}`],
+    { env: { ...process.env, HOME: tmpDir, PATH: `${tmpDir}:${process.env.PATH}` }, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 1, "exit code must be 1 when daemon-reload or enable fails");
 });
 
 test("installSystemdService with enable=true calls systemctl daemon-reload and enable, not on dry-run", () => {

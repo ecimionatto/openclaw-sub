@@ -260,6 +260,7 @@ function cmdInstallSystemd(flags) {
     for (const err of res.enableResult.errors) {
       console.error(`✗ ${err}`);
     }
+    if (res.enableResult.errors.length > 0) process.exitCode = 1;
   }
 
   console.log("To complete setup and survive reboots and SSH disconnects, run:");

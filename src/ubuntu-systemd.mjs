@@ -8,7 +8,7 @@ function escapeSystemdPath(str) {
 }
 
 function escapeSystemdEnvValue(str) {
-  return str.replace(/%/g, "%%").replace(/ /g, "\\x20");
+  return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%").replace(/ /g, "\\x20");
 }
 
 export function generateSystemdService({ workspace, nodeBinDir } = {}) {
@@ -20,7 +20,6 @@ export function generateSystemdService({ workspace, nodeBinDir } = {}) {
 
   const content = `[Unit]
 Description=OpenClaw + clawsub subscription manager
-After=network.target
 
 [Service]
 Type=simple
