@@ -896,3 +896,29 @@ test("cmdSavings CLI command outputs savings for both empty and populated state 
   assert.equal(popJson.turnsTracked, 5);
   assert.ok(popJson.totalSavedUsd > 0, "totalSavedUsd should be positive for codex turns");
 });
+
+test("docs/BENCHMARKS.md exists and contains required sections and workload numbers", () => {
+  const benchPath = new URL("../docs/BENCHMARKS.md", import.meta.url).pathname;
+  assert.ok(fs.existsSync(benchPath), "docs/BENCHMARKS.md must exist");
+
+  const content = fs.readFileSync(benchPath, "utf8");
+
+  const requiredHeadings = [
+    "30-Day Workload Model",
+    "Cost Comparison",
+    "Failure Recovery",
+    "Reproduction Commands",
+  ];
+  for (const heading of requiredHeadings) {
+    assert.ok(content.includes(heading), `docs/BENCHMARKS.md must contain section: ${heading}`);
+  }
+
+  // Workload numbers from acceptance criteria
+  assert.ok(content.includes("1,440"), "Must document 1,440 heartbeats/month (48/day × 30)");
+  assert.ok(content.includes("1,200"), "Must document 1,200 chat turns/month (40/day × 30)");
+  assert.ok(content.includes("2,700"), "Must document 2,700 total turns/month");
+
+  // Reproduction commands present
+  assert.ok(content.includes("clawsub savings"), "Must include clawsub savings reproduction command");
+  assert.ok(content.includes("clawsub doctor"), "Must include clawsub doctor reproduction command");
+});
