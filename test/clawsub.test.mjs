@@ -171,6 +171,65 @@ test("routePrompt sets auth_expired status with 6h cooldown and remediation on a
   assert.ok(cooldownUntil.getTime() - now.getTime() <= 6 * 3600_000 + 1000);
 });
 
+test("routePrompt all-auth chain: output names auth cause, not quota cooldown", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes("expired credentials"), `expected 'expired credentials' in: ${result.output}`);
+  assert.ok(!result.output.includes("quota cooldown"), `should not mention quota cooldown in: ${result.output}`);
+  assert.ok(result.output.includes("claude: auth expired"), `expected per-provider label in: ${result.output}`);
+  assert.ok(result.output.includes("codex: auth expired"), `expected per-provider label in: ${result.output}`);
+  assert.ok(result.output.includes("openclaw models auth login"), `expected remediation cmd in: ${result.output}`);
+});
+
+test("routePrompt mixed auth/quota chain: quota reset shown, auth listed separately", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  let call = 0;
+  const runner = () => {
+    call++;
+    if (call === 1) {
+      return {
+        stdout: '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
+        stderr: "",
+        exitCode: 1,
+        latencyMs: 10,
+      };
+    }
+    return {
+      stdout: "",
+      stderr: "OAuth token refresh failed: token expired",
+      exitCode: 1,
+      latencyMs: 10,
+    };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes("quota cooldown"), `expected quota cooldown in: ${result.output}`);
+  assert.ok(result.output.includes("Auth expired"), `expected auth section in: ${result.output}`);
+  assert.ok(result.output.includes("codex: auth expired"), `expected per-provider auth label in: ${result.output}`);
+  assert.ok(!result.output.includes("quota cooldown") || result.output.includes("claude"), `quota reset should reference claude`);
+});
+
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
   const now = new Date(2026, 10, 25, 16, 0);
@@ -1196,14 +1255,14 @@ test("CLI loop init --force passes force to loopInit and overwrites files", () =
   fs.writeFileSync(backlogPath, "edited");
 
   spawnSync(process.execPath, ["./bin/clawsub.mjs", "loop", "init", "--workspace", tmpDir, "--force"], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."),
+    cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
   });
 
   assert.notEqual(fs.readFileSync(backlogPath, "utf8"), "edited", "--force must overwrite edited file via CLI");
 });
 
 test("fixture-driven: each cli-error fixture classifies and parses correctly", () => {
-  const fixtureDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "fixtures/cli-errors");
+  const fixtureDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/cli-errors");
   const nowRef = new Date(2026, 10, 25, 10, 0); // Nov 25 2026 10:00 AM
 
   const table = [

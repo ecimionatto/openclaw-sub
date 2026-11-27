@@ -96,15 +96,15 @@ export function parseResetTime(output, now = new Date()) {
     const candidate = new Date(now);
     if (codexAbsMatch[1]) {
       const monthIdx = MONTHS[codexAbsMatch[1].toLowerCase()];
-      if (monthIdx !== undefined) {
-        const day = Number.parseInt(codexAbsMatch[2], 10);
-        candidate.setMonth(monthIdx, day);
-        candidate.setHours(hour, minute, 0, 0);
-        if (codexAbsMatch[3]) {
-          candidate.setFullYear(Number.parseInt(codexAbsMatch[3], 10));
-        } else if (candidate.getTime() < now.getTime() - 6 * 3600_000) {
-          candidate.setFullYear(candidate.getFullYear() + 1);
-        }
+      if (monthIdx === undefined) return null;
+      const day = Number.parseInt(codexAbsMatch[2], 10);
+      const year = codexAbsMatch[3]
+        ? Number.parseInt(codexAbsMatch[3], 10)
+        : candidate.getFullYear();
+      candidate.setFullYear(year, monthIdx, day);
+      candidate.setHours(hour, minute, 0, 0);
+      if (!codexAbsMatch[3] && candidate.getTime() < now.getTime() - 6 * 3600_000) {
+        candidate.setFullYear(candidate.getFullYear() + 1);
       }
     } else {
       candidate.setHours(hour, minute, 0, 0);
@@ -150,7 +150,7 @@ export function parseResetTime(output, now = new Date()) {
       if (meridiem === "am" && hour === 12) hour = 0;
 
       const candidate = new Date(now);
-      candidate.setMonth(monthIdx, day);
+      candidate.setFullYear(now.getFullYear(), monthIdx, day);
       candidate.setHours(hour, minute, 0, 0);
       if (candidate.getTime() < now.getTime() - 6 * 3600_000) {
         candidate.setFullYear(candidate.getFullYear() + 1);

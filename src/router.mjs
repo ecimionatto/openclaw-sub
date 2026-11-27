@@ -268,26 +268,39 @@ export function routePrompt(prompt, opts = {}) {
     };
   }
 
-  const activeCooldowns = chain
+  const authExpiredIds = chain.filter(
+    (id) => state.providers?.[id]?.status === "auth_expired"
+  );
+  const quotaCooldowns = chain
+    .filter((id) => !authExpiredIds.includes(id))
     .map((id) => ({ id, ...getProviderCooldown(state, id, now) }))
     .filter((c) => c.coolingDown && c.until)
     .sort((a, b) => new Date(a.until).getTime() - new Date(b.until).getTime());
 
-  const earliest = activeCooldowns[0];
-  const authExpiredEntries = chain
-    .filter((id) => state.providers?.[id]?.status === "auth_expired")
-    .map((id) => state.providers[id].remediation)
-    .filter(Boolean);
-  const authHint = authExpiredEntries.length > 0 ? " " + authExpiredEntries.join(" ") : "";
-  const resetMsg = earliest
-    ? `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authHint}`
-    : `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authHint}`;
+  const earliest = quotaCooldowns[0];
+  const authLines = authExpiredIds
+    .map((id) => {
+      const rem = state.providers[id]?.remediation;
+      return rem ? `  ${id}: auth expired, run \`${rem}\`` : `  ${id}: auth expired`;
+    })
+    .join("\n");
+
+  let resetMsg;
+  if (authExpiredIds.length > 0 && quotaCooldowns.length === 0) {
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) have expired credentials:\n${authLines}`;
+  } else if (earliest) {
+    const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
+  } else {
+    const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authNote}`;
+  }
 
   return {
     ok: false,
     provider: null,
     output: resetMsg,
-    allCoolingDown: activeCooldowns.length > 0,
+    allCoolingDown: quotaCooldowns.length > 0 || authExpiredIds.length > 0,
     attempts,
   };
 }
