@@ -36,7 +36,7 @@ Usage:
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
   clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
-  clawsub install-skill [--workspace <path>]
+  clawsub install-skill [--workspace <path>] [--global]
   clawsub version [--json]
   clawsub status [--json]
   clawsub baton [--session <key>] [--clear] [--json]
@@ -280,7 +280,7 @@ function cmdInstallSkill(flags) {
   const stateDir = getDefaultStateDir();
   const config = loadConfig(stateDir);
   const workspace = flags.workspace || config.workspace || process.cwd();
-  const res = installSkill({ workspace });
+  const res = installSkill({ workspace, global: Boolean(flags.global) });
   console.log("🦞 Installed clawsub SKILL.md:");
   for (const p of res.installedPaths) {
     console.log(`  ✓ ${p}`);

@@ -96,16 +96,18 @@ export function recordVersionSnapshot(stateDir = getDefaultStateDir(), label = "
 }
 
 /**
- * Installs the `clawsub` SKILL.md into an OpenClaw / Antigravity workspace so the agent itself
- * can check quota cooldowns, reorder providers, run doctor checks, and upgrade OpenClaw.
+ * Installs the `clawsub` SKILL.md into Claude Code and optionally a global OpenClaw skills dir.
  *
  * @param {{
  *   workspace?: string,
+ *   global?: boolean,
+ *   homeDir?: string,
  *   skillSourcePath?: string,
  * }} [opts]
  */
 export function installSkill(opts = {}) {
   const workspace = opts.workspace || process.cwd();
+  const homeDir = opts.homeDir || os.homedir();
   const defaultSource = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     "../skills/clawsub/SKILL.md"
@@ -113,11 +115,13 @@ export function installSkill(opts = {}) {
   const sourcePath = opts.skillSourcePath || defaultSource;
   const content = fs.readFileSync(sourcePath, "utf8");
 
-  // Install into both OpenClaw (`skills/clawsub/SKILL.md`) and Antigravity/Claude (`.agents/skills/clawsub/SKILL.md`)
   const targets = [
-    path.join(workspace, "skills", "clawsub", "SKILL.md"),
-    path.join(workspace, ".agents", "skills", "clawsub", "SKILL.md"),
+    path.join(workspace, ".claude", "skills", "clawsub", "SKILL.md"),
   ];
+
+  if (opts.global) {
+    targets.push(path.join(homeDir, ".openclaw", "skills", "clawsub", "SKILL.md"));
+  }
 
   for (const target of targets) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
