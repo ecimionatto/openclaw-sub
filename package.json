@@ -17,6 +17,7 @@
     "skills/",
     "scripts/",
     "docs/",
+    "loop-pack/",
     ".well-known/",
     "llms.txt",
     "llms-full.txt",
