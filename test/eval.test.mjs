@@ -156,6 +156,30 @@ test("parseLog + computeMetrics: unmapped prefix with opened URL uses single rep
   assert.equal(metrics["acme/widget"].taskCount, 1);
 });
 
+test("parseBoard + computeMetrics: --board with unmapped prefix keeps merged status (taskId-only join)", () => {
+  const boardText = [
+    "| ID | Tier | Title | Why | Files | DV | Status | PR |",
+    "|---|---|---|---|---|---|---|---|",
+    "| XX-01 | Must | Widget thing | reason | src/w.mjs | no | merged 2026-11-26 | [#42](https://github.com/acme/widget/pull/42) |",
+  ].join("\n");
+  const logText = [
+    "2026-11-26 10:00:00 tick: inflight=0",
+    "spawned XX-01 pid=100",
+    "XX-01 opened https://github.com/acme/widget/pull/42",
+    "XX-01: reviewed -> APPROVE",
+  ].join("\n");
+  const boardRows = parseBoard(boardText);
+  assert.equal(boardRows.length, 1);
+  assert.equal(boardRows[0].repo, "acme/widget", "board row repo should come from PR URL");
+  assert.equal(boardRows[0].merged, true);
+  const events = parseLog(logText);
+  const metrics = computeMetrics(events, { boardRows });
+  const repoKeys = Object.keys(metrics);
+  assert.equal(repoKeys.length, 1, `expected 1 repo entry; got: ${repoKeys.join(", ")}`);
+  assert.equal(repoKeys[0], "acme/widget");
+  assert.equal(metrics["acme/widget"].taskCount, 1);
+});
+
 test("computeMetrics: rescope rate with rescoped task", () => {
   const logWithRescope = `\
 2026-11-26T10:00:00Z repo:org/r task:T-1 spawned

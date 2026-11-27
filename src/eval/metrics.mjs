@@ -30,7 +30,8 @@ export function parseBoard(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (!/^[A-Z]+-[A-Za-z0-9]+$/.test(id)) continue;
     const status = cells[6] || "";
     const prCell = cells[7] || "";
-    const repo = repoFromTaskId(id, repoMap);
+    const prUrlMatch = /https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/.exec(prCell);
+    const repo = prUrlMatch ? prUrlMatch[1] : repoFromTaskId(id, repoMap);
     rows.push({
       taskId: id,
       tier: cells[1] || "",
@@ -175,14 +176,14 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
 function groupByTask(events, boardRows = []) {
   const tasks = new Map();
   for (const ev of events) {
-    const key = `${ev.repo}::${ev.taskId}`;
-    if (!tasks.has(key)) tasks.set(key, { repo: ev.repo, taskId: ev.taskId, events: [], boardRow: null });
-    tasks.get(key).events.push(ev);
+    if (!tasks.has(ev.taskId)) tasks.set(ev.taskId, { repo: ev.repo, taskId: ev.taskId, events: [], boardRow: null });
+    tasks.get(ev.taskId).events.push(ev);
   }
   for (const row of boardRows) {
-    const key = `${row.repo}::${row.taskId}`;
-    if (tasks.has(key)) {
-      tasks.get(key).boardRow = row;
+    if (tasks.has(row.taskId)) {
+      tasks.get(row.taskId).boardRow = row;
+    } else {
+      tasks.set(row.taskId, { repo: row.repo, taskId: row.taskId, events: [], boardRow: row });
     }
   }
   return [...tasks.values()];
@@ -198,11 +199,10 @@ function median(nums) {
 }
 
 export function computeMetrics(events, { repo, boardRows = [] } = {}) {
-  const filtered = repo ? events.filter((e) => e.repo === repo) : events;
-  const filteredBoard = repo ? boardRows.filter((b) => b.repo === repo) : boardRows;
-  const tasks = groupByTask(filtered, filteredBoard);
+  const allTasks = groupByTask(events, boardRows);
+  const tasks = repo ? allTasks.filter((t) => t.repo === repo) : allTasks;
 
-  const repos = [...new Set(filtered.map((e) => e.repo))];
+  const repos = [...new Set(tasks.map((t) => t.repo))];
   const result = {};
 
   for (const r of repos) {

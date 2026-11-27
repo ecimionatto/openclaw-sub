@@ -22,7 +22,7 @@ test("eval metrics with tick-only log exits 0 and reports 0 events", () => {
   try {
     const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile], { encoding: "utf8" });
     assert.equal(r.status, 0, `expected exit 0 for tick-only log; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
-    assert.ok(!r.stdout.includes("error:"), `expected no error in stdout: ${r.stdout}`);
+    assert.ok(r.stdout.trim().includes("No events found."), `expected "No events found." in stdout: ${r.stdout}`);
   } finally {
     fs.rmSync(tmpDir, { recursive: true });
   }
@@ -39,7 +39,7 @@ test("eval metrics with tick-only log --json exits 0 and returns valid JSON", ()
     const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile, "--json"], { encoding: "utf8" });
     assert.equal(r.status, 0, `expected exit 0 for tick-only log --json; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
     const out = JSON.parse(r.stdout);
-    assert.ok(typeof out === "object", `expected JSON object: ${r.stdout}`);
+    assert.deepEqual(out, {}, `expected exactly {} for tick-only log --json: ${r.stdout}`);
   } finally {
     fs.rmSync(tmpDir, { recursive: true });
   }
