@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PROVIDERS, detectBinary, inspectProvider } from "./providers.mjs";
-import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState, normalizeChain } from "./state.mjs";
+import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState, normalizeChain, validateConfig } from "./state.mjs";
 
 /**
  * Maps a normalized chain into the OpenClaw JSON `agents.defaults` model config.
@@ -21,11 +21,11 @@ export function configureOpenClawJson(chain, { failover = true } = {}) {
   const primaryModel = toModelId(primary);
 
   if (!failover || normalized.length === 1) {
-    return { agents: { defaults: { model: primaryModel } } };
+    return { agents: { defaults: { model: { primary: primaryModel } } } };
   }
 
   const fallbacks = normalized.slice(1).map(toModelId);
-  return { agents: { defaults: { model: primaryModel, fallbackModels: fallbacks } } };
+  return { agents: { defaults: { model: { primary: primaryModel, fallbacks } } } };
 }
 
 /**
@@ -192,7 +192,7 @@ export function runDoctor(opts = {}) {
   const openclawBin = detectBinary("openclaw");
   const rawChain = config.chain || ["claude", "codex", "agy"];
   const normalizedChain = normalizeChain(rawChain);
-  const providers = normalizedChain.map((entry) => {
+  const providers = normalizedChain.filter((entry) => PROVIDERS[entry.provider]).map((entry) => {
     const info = inspectProvider(entry.provider, { homeDir: opts.homeDir });
     // Allow test-time override of installed status for deterministic checks
     const installed = opts.installedProviders !== undefined
@@ -214,6 +214,11 @@ export function runDoctor(opts = {}) {
   const installedReady = providers.filter((p) => p.installed && p.authenticated);
   const issues = [];
   const recommendations = [];
+
+  const configErrors = validateConfig(config, PROVIDERS);
+  for (const err of configErrors) {
+    issues.push(`config: ${err}`);
+  }
 
   if (!openclawBin.installed) {
     issues.push("OpenClaw binary (`openclaw`) was not found on PATH.");

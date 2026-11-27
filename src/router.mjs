@@ -93,9 +93,14 @@ export function routePrompt(prompt, opts = {}) {
     }
   }
 
-  const rawChain = opts.onlyProvider
-    ? [opts.onlyProvider]
-    : config.chain || ["claude", "codex", "agy"];
+  let rawChain;
+  if (opts.onlyProvider) {
+    const normalizedConfigChain = normalizeChain(config.chain || ["claude", "codex", "agy"]);
+    const matched = normalizedConfigChain.find((e) => e.provider === opts.onlyProvider);
+    rawChain = matched ? [matched] : [opts.onlyProvider];
+  } else {
+    rawChain = config.chain || ["claude", "codex", "agy"];
+  }
   const normalizedChain = normalizeChain(rawChain);
   // top-level failover: false = single-agent mode
   const chain = config.failover === false ? normalizedChain.slice(0, 1) : normalizedChain;

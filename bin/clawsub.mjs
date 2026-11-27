@@ -100,14 +100,15 @@ function readStdinIfPiped() {
 function cmdInit(flags) {
   const stateDir = getDefaultStateDir();
   const existing = loadConfig(stateDir);
-  const requestedChain = flags.chain
+  const chainProvided = !!flags.chain;
+  const requestedChain = chainProvided
     ? normalizeChain(
         String(flags.chain)
           .split(",")
           .map((s) => s.trim().toLowerCase())
           .filter(Boolean)
       ).filter((e) => e.provider)
-    : existing.chain || ["claude", "codex", "agy"];
+    : normalizeChain(existing.chain || ["claude", "codex", "agy"]);
   const noFailover = flags["no-failover"] === true;
 
   const chainErrors = validateConfig({ chain: requestedChain }, PROVIDERS);
@@ -167,15 +168,16 @@ function cmdInit(flags) {
   }
 
   console.log("\n[3/5] Writing Subscription-Saver Config, Cooldown Shims & Version Snapshot...");
-  // Always write failover field explicitly: false when --no-failover, undefined (removed) otherwise.
-  // This allows re-init without --no-failover to turn failover back on even if it was previously disabled.
-  const { failover: _existingFailover, ...existingWithoutFailover } = existing;
+  // Preserve existing failover setting unless user explicitly changes it.
+  // --no-failover => false; new --chain without --no-failover => remove (re-enable); no change => keep existing.
+  const { failover: existingFailover, ...existingWithoutFailover } = existing;
+  const preservedFailover = noFailover ? false : (chainProvided ? undefined : existingFailover);
   const saved = saveConfig(
     {
       ...existingWithoutFailover,
       chain: requestedChain,
       workspace,
-      ...(noFailover && { failover: false }),
+      ...(preservedFailover === false && { failover: false }),
     },
     stateDir
   );
@@ -206,7 +208,7 @@ function cmdInit(flags) {
 
   if (flags.probe) {
     console.log("\n[5/5] Running Live Verification Probes...");
-    cmdTest({ chain: requestedChain.join(",") });
+    cmdTest({ chain: requestedChain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(",") });
   } else {
     console.log("\n[5/5] Next Steps:");
     console.log("  • Run `clawsub test` to verify DIRECT_OK / FALLBACK_OK across your CLIs.");
@@ -333,13 +335,15 @@ function cmdStatus(flags) {
   const state = loadState(stateDir);
   const now = new Date();
 
-  const rows = (config.chain || []).map((id, idx) => {
-    const info = inspectProvider(id);
-    const cd = getProviderCooldown(state, id, now);
-    const pState = state.providers?.[id] || {};
+  const normalizedStatusChain = normalizeChain(config.chain || []);
+  const rows = normalizedStatusChain.map((entry, idx) => {
+    const info = inspectProvider(entry.provider);
+    const stateKey = entry.model ? `${entry.provider}:${entry.model}` : entry.provider;
+    const cd = getProviderCooldown(state, stateKey, now);
+    const pState = state.providers?.[stateKey] || {};
     return {
       role: idx === 0 ? "primary" : `fallback-#${idx}`,
-      id,
+      id: stateKey,
       name: info.name,
       subscription: info.subscription,
       version: info.version,
@@ -374,7 +378,7 @@ function cmdStatus(flags) {
   }
 
   console.log(`🦞 clawsub status (v${CLAWSUB_VERSION})\n`);
-  console.log(`Chain:               ${(config.chain || []).join(" -> ")}`);
+  console.log(`Chain:               ${normalizedStatusChain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(" -> ")}`);;
   console.log(`Workspace:           ${config.workspace}`);
   console.log(`Last Active CLI:     ${state.lastActiveProvider || "(none yet)"}`);
   console.log(`Quiet Windows:       ${(config.quietWindows || []).join(", ") || "none"}`);
@@ -436,11 +440,14 @@ function cmdTest(flags) {
         .split(",")
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean)
-    : config.chain || ["claude", "codex", "agy"];
+    : normalizeChain(config.chain || ["claude", "codex", "agy"]).map((e) =>
+        e.model ? `${e.provider}:${e.model}` : e.provider
+      );
 
   console.log(`🧪 Testing subscription CLI chain: ${chain.join(" -> ")}\n`);
   for (let i = 0; i < chain.length; i++) {
-    const id = chain[i];
+    const entry = chain[i];
+    const id = entry.split(":")[0];
     const token = i === 0 ? `${id.toUpperCase()}_DIRECT_OK` : `${id.toUpperCase()}_FALLBACK_OK`;
     const info = inspectProvider(id);
     if (!info.installed || !info.authenticated) {

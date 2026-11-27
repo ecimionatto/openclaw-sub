@@ -33,7 +33,7 @@ import {
   saveState,
   validateConfig,
 } from "../src/index.mjs";
-import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { configureOpenClawJson, inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
@@ -1874,6 +1874,190 @@ test("cmdInit: --no-failover saves failover:false; re-init without it removes fa
   assert.ok(
     withFailoverRestored.failover !== false,
     "re-init without --no-failover must not keep failover:false"
+  );
+});
+
+// ── CS-20 fix-up: configureOpenClawJson ─────────────────────────────────────
+
+test("configureOpenClawJson: basic chain emits primary+fallbacks shape", () => {
+  const result = configureOpenClawJson(["claude", "codex", "agy"]);
+  assert.deepEqual(result, {
+    agents: {
+      defaults: {
+        model: {
+          primary: "claude",
+          fallbacks: ["codex", "agy"],
+        },
+      },
+    },
+  });
+});
+
+test("configureOpenClawJson: chain with per-entry models uses provider/model IDs", () => {
+  const result = configureOpenClawJson([
+    { provider: "claude", model: "opus" },
+    { provider: "codex" },
+    { provider: "agy", model: "pro" },
+  ]);
+  assert.equal(result.agents.defaults.model.primary, "claude/opus");
+  assert.deepEqual(result.agents.defaults.model.fallbacks, ["codex", "agy/pro"]);
+});
+
+test("configureOpenClawJson: single-entry chain emits primary with no fallbacks key", () => {
+  const result = configureOpenClawJson(["claude"]);
+  assert.ok("primary" in result.agents.defaults.model, "primary must be present");
+  assert.ok(!("fallbacks" in result.agents.defaults.model), "fallbacks must be absent for single entry");
+});
+
+test("configureOpenClawJson: failover:false omits fallbacks even with multi-entry chain", () => {
+  const result = configureOpenClawJson(["claude", "codex", "agy"], { failover: false });
+  assert.equal(result.agents.defaults.model.primary, "claude");
+  assert.ok(!("fallbacks" in result.agents.defaults.model), "fallbacks must be absent when failover is off");
+});
+
+test("configureOpenClawJson: same provider twice with different models both appear", () => {
+  const result = configureOpenClawJson([
+    { provider: "claude", model: "opus" },
+    { provider: "claude", model: "sonnet" },
+  ]);
+  assert.equal(result.agents.defaults.model.primary, "claude/opus");
+  assert.deepEqual(result.agents.defaults.model.fallbacks, ["claude/sonnet"]);
+});
+
+test("configureOpenClawJson: optional entries are included in fallbacks", () => {
+  const result = configureOpenClawJson([
+    { provider: "claude" },
+    { provider: "agy", optional: true },
+  ]);
+  assert.equal(result.agents.defaults.model.primary, "claude");
+  assert.deepEqual(result.agents.defaults.model.fallbacks, ["agy"]);
+});
+
+test("configureOpenClawJson: empty chain returns empty object", () => {
+  const result = configureOpenClawJson([]);
+  assert.deepEqual(result, {});
+});
+
+// ── CS-20 fix-up: onlyProvider resolves against configured chain ─────────────
+
+test("routePrompt: onlyProvider resolves model from configured chain entry", () => {
+  const receivedOpts = [];
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", model: "opus" }, { provider: "codex" }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = ({ command, args }) => {
+    receivedOpts.push({ command, args });
+    return { exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner, onlyProvider: "claude" });
+  assert.equal(result.ok, true);
+  const call = receivedOpts[0];
+  assert.ok(call, "runner must be called");
+  assert.ok(call.args.includes("opus"), "model from chain entry must be passed");
+  assert.equal(state.providers["claude:opus"]?.status, "healthy", "state key must include model");
+});
+
+test("routePrompt: onlyProvider for provider not in chain falls back to plain provider entry", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({ exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 });
+  const result = routePrompt("hello", { now, state, config, runner, onlyProvider: "claude" });
+  assert.equal(result.ok, true);
+});
+
+// ── CS-20 fix-up: cmdInit normalizes existing string config ──────────────────
+
+test("cmdInit: re-init without --chain normalizes existing string-encoded chain entries", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-reinit-str-"));
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+
+  // Write a config with legacy string entries (as if hand-edited or from an old version)
+  const configPath = path.join(tmpDir, "clawsub.json");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
+    chain: ["claude:opus", "agy?"],
+    workspace: tmpDir,
+  }));
+
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "init"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, `init must exit 0: ${result.stderr}`);
+  const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const entries = normalizeChain(saved.chain);
+  assert.equal(entries[0].provider, "claude");
+  assert.equal(entries[0].model, "opus");
+  assert.equal(entries[1].provider, "agy");
+  assert.equal(entries[1].optional, true);
+});
+
+// ── CS-20 fix-up: cmdInit failover preservation ──────────────────────────────
+
+test("cmdInit: re-init without --chain or --no-failover preserves existing failover:false", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-failover-preserve-"));
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const configPath = path.join(tmpDir, "clawsub.json");
+
+  spawnSync(
+    process.execPath,
+    [binPath, "init", "--chain", "claude", "--no-failover"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  const after1 = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(after1.failover, false, "--no-failover must save failover:false");
+
+  spawnSync(
+    process.execPath,
+    [binPath, "init"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  const after2 = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(after2.failover, false, "re-init without flags must preserve failover:false");
+});
+
+test("cmdInit: re-init with --chain but no --no-failover removes failover:false", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-failover-chain-"));
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const configPath = path.join(tmpDir, "clawsub.json");
+
+  spawnSync(
+    process.execPath,
+    [binPath, "init", "--chain", "claude", "--no-failover"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+
+  spawnSync(
+    process.execPath,
+    [binPath, "init", "--chain", "claude,codex"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  const after = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.ok(after.failover !== false, "new --chain without --no-failover must re-enable failover");
+});
+
+// ── CS-20 fix-up: runDoctor chain validation ─────────────────────────────────
+
+test("runDoctor: reports config error for chain with unknown provider", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doctor-unk-"));
+  const badConfig = { chain: ["claude", "unknownprovider123"], workspace: tmpDir };
+  saveConfig(badConfig, tmpDir);
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir, installedProviders: new Set(["claude"]) });
+  assert.ok(
+    report.issues.some((i) => /unknownprovider123/.test(i)),
+    "runDoctor must report unknown provider from validateConfig"
   );
 });
 
