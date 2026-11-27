@@ -85,17 +85,23 @@ clawsub install-ubuntu --openclaw-version 2026.11.0
 
 ## 4. Handing Off Work Between Sessions (`clawsub baton`)
 
-When a provider hits its quota mid-task, `clawsub baton` captures a resume context (last commit SHA, working notes, next steps) and passes it to the first ready provider:
+When a provider hits its quota mid-task, `clawsub baton` shows the shared session state so the next provider can resume seamlessly:
 
 ```bash
-# Write baton file and print resume instructions for the next provider
-clawsub baton --workspace /path/to/workspace
+# Show current session state (turn counter, last provider, recent prompts)
+clawsub baton
 
-# Read the baton and resume work from where the previous session left off
-clawsub baton --read --workspace /path/to/workspace
+# Show state for a named session
+clawsub baton --session my-task
+
+# Output raw JSON (useful for scripting handoffs)
+clawsub baton --json
+
+# Clear the shared session state to start fresh
+clawsub baton --clear
 ```
 
-The baton file is written to `<workspace>/.clawsub-baton.json`. The next provider agent reads it at startup and continues from the recorded state.
+The session state is stored in `~/.openclaw/clawsub-baton.json` (overridden by `$CLAWSUB_HOME`). The next provider agent reads the turn history and last-active provider from this file and continues without re-doing completed work.
 
 ---
 
@@ -113,12 +119,14 @@ npx skills add ecimionatto/openclaw-sub
 
 ### Via `clawsub` CLI (workspace or global)
 ```bash
-# Install into .claude/skills/ in the current workspace
+# Install into .claude/skills/, skills/ (ClawHub), and .agents/skills/ in the current workspace
 clawsub install-skill
 
-# Install globally into ~/.openclaw/skills/
+# Also install globally into ~/.openclaw/skills/
 clawsub install-skill --global
 ```
+
+The workspace defaults to `config.workspace` if set, otherwise the current directory.
 
 ---
 

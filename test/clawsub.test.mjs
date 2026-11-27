@@ -402,25 +402,37 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
   assert.equal(snap.label, "unit-test");
   assert.equal(fs.existsSync(path.join(tmpDir, "clawsub-versions.json")), true);
 
-  // 2. Skill installation into workspace: writes both .claude/skills and skills (ClawHub)
+  // 2. Skill installation into workspace: writes .claude/skills, skills (ClawHub), and .agents/skills
   const sk = installSkill({ workspace: tmpDir });
-  assert.equal(sk.installedPaths.length, 2);
+  assert.equal(sk.installedPaths.length, 3);
   const claudePath = path.join(tmpDir, ".claude", "skills", "clawsub", "SKILL.md");
   const clawHubPath = path.join(tmpDir, "skills", "clawsub", "SKILL.md");
+  const agentsPath = path.join(tmpDir, ".agents", "skills", "clawsub", "SKILL.md");
   assert.ok(sk.installedPaths.includes(claudePath), ".claude/skills path must be in installedPaths");
   assert.ok(sk.installedPaths.includes(clawHubPath), "skills path must be in installedPaths");
+  assert.ok(sk.installedPaths.includes(agentsPath), ".agents/skills path must be in installedPaths");
   assert.equal(fs.existsSync(claudePath), true);
   assert.equal(fs.existsSync(clawHubPath), true);
+  assert.equal(fs.existsSync(agentsPath), true);
   assert.match(fs.readFileSync(claudePath, "utf8"), /name:\s*clawsub/);
 
   // 2b. Skill installation with --global also writes ~/.openclaw/skills/clawsub/SKILL.md
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
   const skGlobal = installSkill({ workspace: tmpDir, global: true, homeDir });
-  assert.equal(skGlobal.installedPaths.length, 3);
+  assert.equal(skGlobal.installedPaths.length, 4);
   const globalPath = path.join(homeDir, ".openclaw", "skills", "clawsub", "SKILL.md");
   assert.ok(skGlobal.installedPaths.includes(globalPath), "global path must be in installedPaths");
   assert.equal(fs.existsSync(globalPath), true);
   assert.match(fs.readFileSync(globalPath, "utf8"), /name:\s*clawsub/);
+
+  // 2c. Root SKILL.md must be byte-identical to skills/clawsub/SKILL.md (no drift)
+  const rootSkillPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../SKILL.md");
+  const pkgSkillPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../skills/clawsub/SKILL.md");
+  assert.equal(
+    fs.readFileSync(rootSkillPath, "utf8"),
+    fs.readFileSync(pkgSkillPath, "utf8"),
+    "Root SKILL.md must be byte-identical to skills/clawsub/SKILL.md"
+  );
 
   // 3. Ubuntu installer dry-run and mocked execution with version pinning
   const dry = installOpenClawUbuntu({

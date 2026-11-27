@@ -43,6 +43,6 @@ gh repo edit ecimionatto/openclaw-sub \
   --add-topic agent-skills \
   --add-topic openclaw-skill \
   --add-topic ai-agent \
-  --add-topic subscription-failover
+  --add-topic subscription-failover || echo "Warning: gh repo edit failed (topics not updated)"
 
 echo "✅ Published: https://github.com/ecimionatto/openclaw-sub"
