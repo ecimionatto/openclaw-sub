@@ -1436,13 +1436,29 @@ test("docs/SOCIALIZATION.md contains awesome-list PR kit entries and agent outre
   assert.ok(fs.existsSync(socPath), "docs/SOCIALIZATION.md must exist");
   const content = fs.readFileSync(socPath, "utf8");
 
+  assert.ok(content.includes("## 5. Awesome-list PR Kit"), "SOCIALIZATION.md must contain Section 5 heading");
+
+  const repoUrl = "https://github.com/ecimionatto/openclaw-sub";
   for (const list of ["awesome-openclaw", "awesome-claude-code", "awesome-mcp-servers"]) {
-    assert.ok(content.includes(list), `SOCIALIZATION.md must contain an entry for ${list}`);
+    assert.ok(content.includes(`### ${list}`), `SOCIALIZATION.md must contain a ### ${list} subsection`);
+    assert.ok(
+      content.includes(`[openclaw-sub](${repoUrl})`) || content.includes(repoUrl),
+      `${list} entry must include the repo URL`
+    );
+    assert.ok(content.includes("Suggested PR title"), `${list} subsection must have a Suggested PR title`);
+    assert.ok(content.includes("Suggested PR body"), `${list} subsection must have a Suggested PR body`);
   }
 
-  assert.ok(content.includes("Awesome-list"), "SOCIALIZATION.md must contain an Awesome-list section heading");
+  assert.ok(content.includes("## 6."), "SOCIALIZATION.md must contain Section 6 heading");
+  const sec6Start = content.indexOf("## 6.");
+  const sec6 = content.slice(sec6Start);
+  assert.ok(sec6.includes("openclaw-sub"), "Section 6 fenced block must reference openclaw-sub");
+  assert.ok(
+    sec6.includes("npx openclaw-sub init") || sec6.includes("npx openclaw-sub"),
+    "Section 6 must include the npx quick-start command"
+  );
+
   assert.ok(content.includes("CLAUDE.md") || content.includes("AGENTS.md"), "SOCIALIZATION.md must contain agent-to-agent recommendation snippet referencing CLAUDE.md or AGENTS.md");
-  assert.ok(content.includes("openclaw-sub"), "SOCIALIZATION.md agent snippet must reference openclaw-sub");
 });
 
 test("community contribution files exist and contain required sections", () => {
