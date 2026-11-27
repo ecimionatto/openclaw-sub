@@ -105,7 +105,11 @@ function cmdInit(flags) {
     ? normalizeChain(
         String(flags.chain)
           .split(",")
-          .map((s) => s.trim().toLowerCase())
+          .map((s) => {
+            const t = s.trim();
+            const ci = t.indexOf(":");
+            return ci === -1 ? t.toLowerCase() : t.slice(0, ci).toLowerCase() + t.slice(ci);
+          })
           .filter(Boolean)
       ).filter((e) => e.provider)
     : normalizeChain(existing.chain || ["claude", "codex", "agy"]);
@@ -439,7 +443,11 @@ function cmdTest(flags) {
     ? normalizeChain(
         String(flags.chain)
           .split(",")
-          .map((s) => s.trim().toLowerCase())
+          .map((s) => {
+            const t = s.trim();
+            const ci = t.indexOf(":");
+            return ci === -1 ? t.toLowerCase() : t.slice(0, ci).toLowerCase() + t.slice(ci);
+          })
           .filter(Boolean)
       ).map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider))
     : normalizeChain(config.chain || ["claude", "codex", "agy"]).map((e) =>

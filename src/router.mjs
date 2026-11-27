@@ -289,6 +289,9 @@ export function routePrompt(prompt, opts = {}) {
       });
       // failover: false on this entry = stop here, don't try next provider
       if (entry.failover === false) {
+        if (heartbeat) {
+          return { ok: true, provider: null, output: "NO_REPLY", failoverStopped: true, attempts };
+        }
         return {
           ok: false,
           provider: providerId,

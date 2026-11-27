@@ -20,11 +20,16 @@ export function configureOpenClawJson(chain, { failover = true } = {}) {
   const toModelId = (e) => (e.model ? `${e.provider}/${e.model}` : e.provider);
   const primaryModel = toModelId(primary);
 
-  if (!failover || normalized.length === 1) {
+  // Truncate chain at the first entry with per-entry failover:false so downstream
+  // entries are not emitted as fallbacks (they would never be reached anyway).
+  const cutIdx = normalized.findIndex((e) => e.failover === false);
+  const effectiveChain = cutIdx !== -1 ? normalized.slice(0, cutIdx + 1) : normalized;
+
+  if (!failover || effectiveChain.length === 1) {
     return { agents: { defaults: { model: { primary: primaryModel } } } };
   }
 
-  const fallbacks = normalized.slice(1).map(toModelId);
+  const fallbacks = effectiveChain.slice(1).map(toModelId);
   return { agents: { defaults: { model: { primary: primaryModel, fallbacks } } } };
 }
 
@@ -78,18 +83,21 @@ exec npx --yes openclaw-sub exec ${providerId} -- "$@"
 
   const profilePath = path.join(stateDir, "openclaw-sub-profile.json");
   const failoverEnabled = config.failover !== false;
+  // Truncate at first per-entry failover:false so the profile matches what configureOpenClawJson emits.
+  const cutIdx = normalizedEntries.findIndex((e) => e.failover === false);
+  const effectiveEntries = cutIdx !== -1 ? normalizedEntries.slice(0, cutIdx + 1) : normalizedEntries;
   const profile = {
     generatedAt: new Date().toISOString(),
     mode: "subscription-cli",
     zeroApiKeys: true,
     workspace,
-    primaryProvider: normalizedEntries[0]?.provider || "claude",
-    primaryModel: normalizedEntries[0]?.model || null,
+    primaryProvider: effectiveEntries[0]?.provider || "claude",
+    primaryModel: effectiveEntries[0]?.model || null,
     fallbackProviders: failoverEnabled
-      ? normalizedEntries.slice(1).map((e) => e.provider)
+      ? effectiveEntries.slice(1).map((e) => e.provider)
       : [],
     fallbackModels: failoverEnabled
-      ? normalizedEntries.slice(1).map((e) => e.model || null)
+      ? effectiveEntries.slice(1).map((e) => e.model || null)
       : [],
     routerCommand: routerWrapperPath,
     providerShims,

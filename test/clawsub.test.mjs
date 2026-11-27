@@ -2193,3 +2193,77 @@ test("routePrompt: onlyProvider with model-qualified key selects correct model e
   assert.ok(!receivedArgs[0]?.includes("opus"), "must NOT use opus model");
   assert.equal(state.providers["claude:sonnet"]?.status, "healthy");
 });
+
+// ── CS-20 fix-up: heartbeat NO_REPLY on failover:false + exec error ───────────
+
+test("routePrompt: heartbeat on failover:false + exec error returns NO_REPLY", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", failover: false }, "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const hbPrompt = "[OpenClaw heartbeat poll]\nIf nothing needs attention, reply NO_REPLY.";
+  const runner = () => ({ exitCode: 1, stdout: "", stderr: "unexpected crash", latencyMs: 10 });
+  const result = routePrompt(hbPrompt, { now, state, config, runner });
+  assert.equal(result.output, "NO_REPLY", "heartbeat on failover:false exec error must return NO_REPLY");
+  assert.equal(result.ok, true);
+  assert.equal(result.failoverStopped, true);
+});
+
+// ── CS-20 fix-up: configureOpenClawJson per-entry failover:false ──────────────
+
+test("configureOpenClawJson: per-entry failover:false truncates chain, no fallbacks emitted", () => {
+  const result = configureOpenClawJson([
+    { provider: "claude", failover: false },
+    "codex",
+    "agy",
+  ]);
+  assert.deepStrictEqual(result, { agents: { defaults: { model: { primary: "claude" } } } });
+});
+
+test("configureOpenClawJson: per-entry failover:false mid-chain truncates at that entry", () => {
+  const result = configureOpenClawJson([
+    "claude",
+    { provider: "codex", failover: false },
+    "agy",
+  ]);
+  assert.deepStrictEqual(result, {
+    agents: { defaults: { model: { primary: "claude", fallbacks: ["codex"] } } },
+  });
+});
+
+// ── CS-20 fix-up: cmdInit/cmdTest lowercase only provider part ────────────────
+
+test("cmdInit: --chain with mixed-case model ID preserves model case", () => {
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    spawnSync(process.execPath, [binPath, "init", "--chain", "claude:Opus-4,codex"], {
+      env: { ...process.env, CLAWSUB_HOME: tmpDir },
+    });
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    const claudeEntry = normalizeChain(cfg.chain).find((e) => e.provider === "claude");
+    assert.equal(claudeEntry?.model, "Opus-4", "model case must be preserved");
+    assert.equal(claudeEntry?.provider, "claude", "provider must be lowercase");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit/cmdTest: lowercase normalizer preserves mixed-case model IDs", () => {
+  // Unit-test the normalizer logic used by cmdInit and cmdTest
+  const normalize = (s) => {
+    const t = s.trim();
+    const ci = t.indexOf(":");
+    return ci === -1 ? t.toLowerCase() : t.slice(0, ci).toLowerCase() + t.slice(ci);
+  };
+  assert.equal(normalize("CLAUDE:Opus-4"), "claude:Opus-4");
+  assert.equal(normalize("Claude:SONNET-3"), "claude:SONNET-3");
+  assert.equal(normalize("AGY"), "agy");
+  const parsed = normalizeChain(["claude:Opus-4,codex"].flatMap((s) => s.split(",")).map(normalize));
+  assert.equal(parsed[0]?.provider, "claude");
+  assert.equal(parsed[0]?.model, "Opus-4", "model case must be preserved");
+});
