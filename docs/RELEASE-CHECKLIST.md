@@ -11,7 +11,7 @@ Releases are **fully automated**. Every green push to `main` triggers the CD pip
 | Merge PR to `main` | Maintainer | Squash or merge |
 | CD pipeline triggers | GitHub Actions | `.github/workflows/cd.yml` |
 | Next semver computed | `scripts/next-version.mjs` | Conventional commits since last tag |
-| `package.json` bumped, commit + tag pushed | GitHub Actions bot | `[skip ci]` commit + `vX.Y.Z` tag |
+| `vX.Y.Z` tag pushed | GitHub Actions bot | Tags tested SHA; `package.json` updated in runner workspace only (no commit to `main`) |
 | GitHub Release created with auto-generated notes | `gh release create` | Attached: `install-ubuntu.sh`, `SKILL.md` |
 | `npm publish --tag next` | GitHub Actions | Only when `NPM_TOKEN` secret is set |
 | **Manual review** in GitHub Environment `production` | **Edson** | Required approval gate |

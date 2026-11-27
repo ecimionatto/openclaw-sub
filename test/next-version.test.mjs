@@ -138,3 +138,85 @@ describe('next-version integration (real git repo)', () => {
     }
   });
 });
+
+describe('cd.yml shell snippets (bash -e)', () => {
+  // Snippets extracted from .github/workflows/cd.yml to verify shell correctness.
+
+  function runBash(script, env = {}) {
+    return spawnSync('bash', ['-e', '-c', script], {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+  }
+
+  it('detect-tag: untagged SHA exits 0 and sets empty tag', () => {
+    const d = makeRepo();
+    try {
+      writeFileSync(join(d, 'f'), '');
+      git(d, 'add', '.');
+      git(d, 'commit', '-m', 'chore: init');
+      const sha = git(d, 'rev-parse', 'HEAD');
+      const script = `
+TAG=$(git tag --points-at "${sha}" | grep '^v' | head -1)
+if [ -n "$TAG" ]; then echo "found=$TAG"; else echo "found="; fi
+`;
+      const r = runBash(script, { GIT_DIR: join(d, '.git'), GIT_WORK_TREE: d });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), 'found=');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it('detect-tag: tagged SHA exits 0 and reports the tag', () => {
+    const d = makeRepo();
+    try {
+      writeFileSync(join(d, 'f'), '');
+      git(d, 'add', '.');
+      git(d, 'commit', '-m', 'chore: init');
+      git(d, 'tag', 'v0.1.0');
+      const sha = git(d, 'rev-parse', 'HEAD');
+      const script = `
+TAG=$(git tag --points-at "${sha}" | grep '^v' | head -1)
+if [ -n "$TAG" ]; then echo "found=$TAG"; else echo "found="; fi
+`;
+      const r = runBash(script, { GIT_DIR: join(d, '.git'), GIT_WORK_TREE: d });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), 'found=v0.1.0');
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it('promote snippet: outputs "yes" when VERSION > CURRENT_LATEST', () => {
+    const script = `
+CURRENT_LATEST="0.1.0"
+VERSION="0.2.0"
+SHOULD_PROMOTE=$(node -e "
+  const v = s => s.replace(/^v/,'').split('.').map(Number);
+  const a = v('$CURRENT_LATEST');
+  const b = v('$VERSION');
+  const cmp = a[0]!==b[0] ? a[0]-b[0] : a[1]!==b[1] ? a[1]-b[1] : a[2]-b[2];
+  process.stdout.write(cmp < 0 ? 'yes' : 'no');
+")
+if [ "$SHOULD_PROMOTE" = "yes" ]; then echo "result=yes"; else echo "result=no"; fi
+`;
+    const r = runBash(script);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), 'result=yes');
+  });
+
+  it('promote snippet: outputs "no" when VERSION <= CURRENT_LATEST (skip)', () => {
+    const script = `
+CURRENT_LATEST="0.3.0"
+VERSION="0.2.0"
+SHOULD_PROMOTE=$(node -e "
+  const v = s => s.replace(/^v/,'').split('.').map(Number);
+  const a = v('$CURRENT_LATEST');
+  const b = v('$VERSION');
+  const cmp = a[0]!==b[0] ? a[0]-b[0] : a[1]!==b[1] ? a[1]-b[1] : a[2]-b[2];
+  process.stdout.write(cmp < 0 ? 'yes' : 'no');
+")
+if [ "$SHOULD_PROMOTE" = "yes" ]; then echo "result=yes"; else echo "result=no"; fi
+`;
+    const r = runBash(script);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), 'result=no');
+  });
+});

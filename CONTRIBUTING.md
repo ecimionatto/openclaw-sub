@@ -207,7 +207,7 @@ Every green merge to `main` ships automatically via `.github/workflows/cd.yml`.
 3. **Eval scenarios** (CS-18) run `test/eval.test.mjs`.
 4. **Release job** (after all three pass):
    - Runs `scripts/next-version.mjs` to compute the next semver from conventional commits since the last tag.
-   - Bumps `package.json`, commits with `[skip ci]`, and pushes a `vX.Y.Z` tag.
+   - Sets `package.json` version in the runner workspace and pushes a `vX.Y.Z` tag (no commit to `main`).
    - Creates a GitHub Release with auto-generated notes.
    - Runs `npm publish --tag next` if `NPM_TOKEN` is set; prints a notice and skips otherwise.
 5. **Promote job** (gated by the `production` GitHub Environment — requires Edson's approval):

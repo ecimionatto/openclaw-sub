@@ -76,10 +76,22 @@ jobs:
         run: |
           TAG=$(git tag --points-at "$GITHUB_SHA" | grep '^v' | head -1)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          [ -n "$TAG" ] && echo "SHA $GITHUB_SHA already tagged as $TAG — will reuse"
+          if [ -n "$TAG" ]; then
+            echo "SHA $GITHUB_SHA already tagged as $TAG — will reuse"
+          fi
+          # If this SHA is an ancestor of an already-released tag, a newer merge beat us;
+          # skip to avoid publishing older code under a version tag it doesn't match.
+          LATEST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ] && [ -z "$TAG" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$LATEST_TAG" 2>/dev/null; then
+            echo "skip_release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_SHA is an ancestor of $LATEST_TAG — skipping release for superseded SHA"
+          else
+            echo "skip_release=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Compute next version
         id: version
+        if: steps.existing_tag.outputs.skip_release != 'true'
         run: |
           if [ -n "${{ steps.existing_tag.outputs.tag }}" ]; then
             VERSION="${{ steps.existing_tag.outputs.tag }}"
@@ -97,12 +109,18 @@ jobs:
           echo "Next version: $VERSION"
 
       - name: Tag tested SHA and push
+        if: steps.existing_tag.outputs.skip_release != 'true'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — skipping"
+            EXISTING_SHA=$(git rev-list -1 "$TAG")
+            if [ "$EXISTING_SHA" != "$GITHUB_SHA" ]; then
+              echo "::notice::Tag $TAG already exists on $EXISTING_SHA (not $GITHUB_SHA) — skipping release for this SHA"
+              exit 0
+            fi
+            echo "Tag $TAG already exists on this SHA — skipping"
           else
             git tag "$TAG" "$GITHUB_SHA"
             git push origin "$TAG"
@@ -175,7 +193,7 @@ jobs:
               const cmp = a[0]!==b[0] ? a[0]-b[0] : a[1]!==b[1] ? a[1]-b[1] : a[2]-b[2];
               process.stdout.write(cmp < 0 ? 'yes' : 'no');
             ")
-            if [ "\$SHOULD_PROMOTE" = "yes" ]; then
+            if [ "$SHOULD_PROMOTE" = "yes" ]; then
               npm dist-tag add "openclaw-sub@$VERSION" latest
               echo "Promoted openclaw-sub@$VERSION to latest"
             else
