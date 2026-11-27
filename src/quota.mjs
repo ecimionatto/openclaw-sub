@@ -5,21 +5,34 @@
 
 export const LIMIT_PATTERNS = [
   /usage_limit_reached/i,
-  /hit your (?:5-hour|weekly|daily|monthly) limit/i,
+  /hit your (?:5-hour|weekly|daily|monthly|session|usage) limit/i,
+  /You[’']ve hit your (?:usage|session|weekly|daily|monthly|5-hour|Opus|Sonnet|model) limit/i,
   /rate_limit_error/i,
   /quota[ _-]?exceeded/i,
   /ResourceExhausted/i,
   /too many requests/i,
   /\bHTTP\s*429\b/i,
   /\bstatus(?:\s+code)?:\s*429\b/i,
+  /Request rejected \(429\)/i,
   /exceeded your current quota/i,
   /try again in \d+\s*(?:minutes?|hours?|seconds?)/i,
+];
+
+export const AUTH_PATTERNS = [
+  /not logged in/i,
+  /OAuth token refresh failed/i,
+  /Invalid API key/i,
+  /RefreshTokenFailed/i,
+  /authentication required/i,
+  /auth_expired/i,
 ];
 
 const MONTHS = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
+
+const WEEKDAYS = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
 
 /**
  * Returns true if the CLI stdout/stderr indicates a subscription quota or rate limit.
@@ -29,6 +42,16 @@ const MONTHS = {
 export function isQuotaError(output) {
   if (!output || typeof output !== "string") return false;
   return LIMIT_PATTERNS.some((re) => re.test(output));
+}
+
+/**
+ * Returns true if the CLI stdout/stderr indicates an auth/credential failure.
+ * @param {string} output
+ * @returns {boolean}
+ */
+export function isAuthError(output) {
+  if (!output || typeof output !== "string") return false;
+  return AUTH_PATTERNS.some((re) => re.test(output));
 }
 
 /**
@@ -60,7 +83,52 @@ export function parseResetTime(output, now = new Date()) {
     return new Date(now.getTime() + amount * mult);
   }
 
-  // 2. Explicit month + day + time: "resets Nov 28, 10:00am" or "resets Nov 28 at 6pm"
+  // 2a. Codex absolute date: "Try again at 3:45 PM" or "Try again at Nov 28th, 2026 3:45 PM"
+  const codexAbsMatch = output.match(
+    /[Tt]ry again at\s+(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:\d{4}\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([AP]M)/i
+  );
+  if (codexAbsMatch) {
+    let hour = Number.parseInt(codexAbsMatch[3], 10);
+    const minute = Number.parseInt(codexAbsMatch[4] || "0", 10);
+    const meridiem = codexAbsMatch[5].toUpperCase();
+    if (meridiem === "PM" && hour < 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+    const candidate = new Date(now);
+    if (codexAbsMatch[1]) {
+      const monthIdx = MONTHS[codexAbsMatch[1].toLowerCase()];
+      if (monthIdx !== undefined) {
+        const day = Number.parseInt(codexAbsMatch[2], 10);
+        candidate.setMonth(monthIdx, day);
+      }
+    }
+    candidate.setHours(hour, minute, 0, 0);
+    if (candidate.getTime() < now.getTime() - 6 * 3600_000) {
+      candidate.setFullYear(candidate.getFullYear() + 1);
+    }
+    return candidate;
+  }
+
+  // 2b. Weekday reset: "resets Mon 12:00am" or "resets Monday at 9am"
+  const weekdayMatch = output.match(
+    /resets(?:\s+on)?\s+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?/i
+  );
+  if (weekdayMatch) {
+    const targetDay = WEEKDAYS[weekdayMatch[1].toLowerCase().slice(0, 3)];
+    if (targetDay !== undefined) {
+      let hour = Number.parseInt(weekdayMatch[2], 10);
+      const minute = Number.parseInt(weekdayMatch[3] || "0", 10);
+      const meridiem = (weekdayMatch[4] || "").toLowerCase();
+      if (meridiem === "pm" && hour < 12) hour += 12;
+      if (meridiem === "am" && hour === 12) hour = 0;
+      const candidate = new Date(now);
+      candidate.setHours(hour, minute, 0, 0);
+      const daysUntil = (targetDay - now.getDay() + 7) % 7 || (candidate <= now ? 7 : 0);
+      candidate.setDate(candidate.getDate() + daysUntil);
+      return candidate;
+    }
+  }
+
+  // 2c. Explicit month + day + time: "resets Nov 28, 10:00am" or "resets Nov 28 at 6pm"
   const dateMatch = output.match(
     /resets(?:\s+on)?\s+([A-Za-z]{3})[a-z]*\s+(\d{1,2})(?:,|\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?/i
   );

@@ -16,6 +16,7 @@ import {
   getProviderCooldown,
   installOpenClawUbuntu,
   installSkill,
+  isAuthError,
   isHeartbeatPrompt,
   isQuotaError,
   loadState,
@@ -82,6 +83,92 @@ test("computeCooldownUntil adds safety buffer to parsed reset time or falls back
     defaultMinutes: 60,
   });
   assert.equal(fallback.getTime() - now.getTime(), 60 * 60_000);
+});
+
+test("isQuotaError table: session/model/weekly limits, curly apostrophe, Request rejected (429)", () => {
+  const hits = [
+    "You’ve hit your session limit.",
+    "You've hit your session limit.",
+    "You’ve hit your weekly limit. Resets Mon 12:00am.",
+    "You’ve hit your usage limit. Try again at Nov 28th, 2026 3:45 PM.",
+    "You've hit your Opus limit for this week.",
+    "You've hit your Sonnet limit. Resets in 2 hours.",
+    "Request rejected (429): too many requests",
+  ];
+  for (const msg of hits) {
+    assert.equal(isQuotaError(msg), true, `should match: ${msg}`);
+  }
+  assert.equal(isQuotaError("Everything is working fine."), false);
+});
+
+test("parseResetTime: weekday reset 'resets Mon 12:00am'", () => {
+  // now = Wednesday Nov 25 2026 16:00 — next Monday is Nov 30
+  const now = new Date(2026, 10, 25, 16, 0);
+  const result = parseResetTime("You’ve hit your weekly limit. Resets Mon 12:00am.", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getDay(), 1, "should be a Monday");
+  assert.equal(result.getHours(), 0);
+  assert.equal(result.getMinutes(), 0);
+  assert.ok(result > now, "reset must be in the future");
+});
+
+test("parseResetTime: Codex 'Try again at 3:45 PM'", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const result = parseResetTime("You’ve hit your usage limit. Try again at 3:45 PM.", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+  assert.ok(result > now);
+});
+
+test("parseResetTime: Codex absolute 'Try again at Nov 28th, 2026 3:45 PM'", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const result = parseResetTime("Try again at Nov 28th, 2026 3:45 PM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getMonth(), 10);
+  assert.equal(result.getDate(), 28);
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+});
+
+test("isAuthError table: Not logged in, OAuth, Invalid API key, RefreshTokenFailed", () => {
+  const hits = [
+    "Error: Not logged in. Please run `claude login`.",
+    "OAuth token refresh failed: token expired",
+    "Error: Invalid API key provided.",
+    "RefreshTokenFailed: unable to refresh OAuth credentials",
+  ];
+  for (const msg of hits) {
+    assert.equal(isAuthError(msg), true, `should match: ${msg}`);
+  }
+  assert.equal(isAuthError("Normal response OK"), false);
+  assert.equal(isAuthError("You've hit your 5-hour limit"), false);
+});
+
+test("routePrompt sets auth_expired status with 6h cooldown and remediation on auth failure", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts[0].status, "auth_expired");
+  assert.ok(result.attempts[0].remediation.includes("openclaw models auth login"));
+  assert.ok(result.attempts[0].remediation.includes("--provider claude"));
+  assert.ok(result.attempts[0].remediation.includes("--force"));
+  const cooldownUntil = new Date(state.providers.claude.cooldownUntil);
+  assert.ok(cooldownUntil.getTime() - now.getTime() >= 6 * 3600_000 - 1000);
+  assert.ok(cooldownUntil.getTime() - now.getTime() <= 6 * 3600_000 + 1000);
 });
 
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {

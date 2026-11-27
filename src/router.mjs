@@ -6,7 +6,7 @@ import {
   saveBatonStore,
 } from "./baton.mjs";
 import { PROVIDERS, defaultCommandRunner } from "./providers.mjs";
-import { computeCooldownUntil, isHeartbeatPrompt, isQuotaError } from "./quota.mjs";
+import { computeCooldownUntil, isAuthError, isHeartbeatPrompt, isQuotaError } from "./quota.mjs";
 import {
   findActiveTimeWindow,
   getProviderCooldown,
@@ -121,7 +121,30 @@ export function routePrompt(prompt, opts = {}) {
 
     const combinedOutput = [result.stdout, result.stderr, result.error].filter(Boolean).join("\n");
 
-    // 5. Check for subscription quota / rate-limit exhaustion
+    // 5a. Check for auth/credential failure -> 6h cooldown, remediation hint
+    if (isAuthError(combinedOutput)) {
+      const until = new Date(now.getTime() + 6 * 3600_000);
+      state.providers[providerId] = {
+        ...(state.providers[providerId] || {}),
+        status: "auth_expired",
+        cooldownUntil: until.toISOString(),
+        lastErrorAt: now.toISOString(),
+        lastError: combinedOutput.slice(-400),
+        remediation: `openclaw models auth login --provider ${providerId} --force`,
+      };
+      if (stateDir || !opts.state) {
+        saveState(state, stateDir);
+      }
+      attempts.push({
+        provider: providerId,
+        status: "auth_expired",
+        cooldownUntil: until.toISOString(),
+        remediation: `openclaw models auth login --provider ${providerId} --force`,
+      });
+      continue;
+    }
+
+    // 5b. Check for subscription quota / rate-limit exhaustion
     if (isQuotaError(combinedOutput)) {
       const until = computeCooldownUntil(combinedOutput, {
         now,
