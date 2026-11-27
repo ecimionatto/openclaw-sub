@@ -157,6 +157,7 @@ export function routePrompt(prompt, opts = {}) {
       state.providers[providerId] = {
         status: "cooldown",
         cooldownUntil: until.toISOString(),
+        resetAt: until.toISOString(),
         lastLimitAt: now.toISOString(),
         lastError: combinedOutput.slice(-400),
       };
@@ -290,7 +291,7 @@ export function routePrompt(prompt, opts = {}) {
     resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) have expired credentials:\n${authLines}`;
   } else if (earliest) {
     const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
-    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) are currently exhausted (quota cooldown). Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
   } else {
     const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
     resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authNote}`;

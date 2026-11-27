@@ -161,6 +161,16 @@ function cmdInit(flags) {
     },
     stateDir
   );
+
+  const initState = loadState(stateDir);
+  for (const id of Object.keys(initState.providers || {})) {
+    const p = initState.providers[id];
+    if (p.status === "cooldown" || p.status === "auth_expired") {
+      initState.providers[id] = { ...p, status: "healthy", cooldownUntil: null, resetAt: null };
+    }
+  }
+  saveState(initState, stateDir);
+
   const integration = generateOpenClawIntegration({
     stateDir,
     chain: saved.chain,
@@ -404,7 +414,7 @@ function cmdDoctor(flags) {
   }
 
   if (report.ok) {
-    console.log("\n✅ All checks passed!");
+    console.log("\n✅ All checks passed — system healthy!");
   } else {
     process.exitCode = 1;
   }
@@ -650,6 +660,12 @@ function main() {
     }
     const sessionKey = typeof flags.session === "string" ? flags.session : "main";
     const res = routePrompt(prompt, { sessionKey });
+    const authExpiredProviders = (res.attempts || []).filter((a) => a.status === "auth_expired");
+    for (const a of authExpiredProviders) {
+      process.stderr.write(
+        `[clawsub] ${a.provider}: auth expired — run \`${a.remediation || `openclaw models auth login --provider ${a.provider} --force`}\` to re-authenticate\n`
+      );
+    }
     console.log(res.output);
     process.exit(res.ok ? 0 : 1);
   }

@@ -5,6 +5,7 @@
 
 export const LIMIT_PATTERNS = [
   /usage_limit_reached/i,
+  /usage limit reached/i,
   /hit your (?:5-hour|weekly|daily|monthly|session|usage) limit/i,
   /You[’']ve hit your (?:usage|session|weekly|daily|monthly|5-hour|Opus|Sonnet|model) limit/i,
   /rate_limit_error/i,

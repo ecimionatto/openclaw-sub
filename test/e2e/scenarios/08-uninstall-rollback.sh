@@ -14,7 +14,7 @@ echo "$ORIG_CONTENT" > "$OPENCLAW_CONFIG"
 
 "$CLAWSUB" init --chain claude,codex,agy --workspace "$HOME/ws" 2>&1 || fail "init failed"
 
-BACKUP=$(ls "$(dirname "$OPENCLAW_CONFIG")"/openclaw.json.bak.* 2>/dev/null | head -1)
+BACKUP=$(find "$(dirname "$OPENCLAW_CONFIG")" -maxdepth 1 -name 'openclaw.json.bak.*' 2>/dev/null | head -1)
 [ -n "$BACKUP" ] || { pass "no openclaw.json installed (backup not applicable); rollback N/A"; exit 0; }
 
 RESTORED=$(cat "$BACKUP")
