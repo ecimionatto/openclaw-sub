@@ -1431,6 +1431,45 @@ test("routePrompt preserves auth_expired status and remediation on second-turn c
   );
 });
 
+test("docs/SOCIALIZATION.md contains awesome-list PR kit entries and agent outreach playbooks", () => {
+  const socPath = fileURLToPath(new URL("../docs/SOCIALIZATION.md", import.meta.url));
+  assert.ok(fs.existsSync(socPath), "docs/SOCIALIZATION.md must exist");
+  const content = fs.readFileSync(socPath, "utf8");
+
+  assert.ok(content.includes("## 5. Awesome-list PR Kit"), "SOCIALIZATION.md must contain Section 5 heading");
+
+  const repoUrl = "https://github.com/ecimionatto/openclaw-sub";
+  for (const list of ["awesome-openclaw", "awesome-claude-code", "awesome-mcp-servers"]) {
+    const headingIdx = content.indexOf(`### ${list}`);
+    assert.ok(headingIdx !== -1, `SOCIALIZATION.md must contain a ### ${list} subsection`);
+    const sliceStart = headingIdx + `### ${list}`.length;
+    const rest = content.slice(sliceStart);
+    const nextHeadingMatch = rest.search(/\n##+ [A-Za-z0-9]/);
+    const slice = nextHeadingMatch === -1 ? rest : rest.slice(0, nextHeadingMatch);
+    assert.ok(
+      slice.includes(`[openclaw-sub](${repoUrl})`),
+      `${list} entry must include the full markdown link [openclaw-sub](${repoUrl})`
+    );
+    assert.ok(slice.includes("Suggested PR title"), `${list} subsection must have a Suggested PR title`);
+    assert.ok(slice.includes("Suggested PR body"), `${list} subsection must have a Suggested PR body`);
+  }
+
+  assert.ok(content.includes("## 6."), "SOCIALIZATION.md must contain Section 6 heading");
+  const sec6Start = content.indexOf("## 6.");
+  const afterSec6 = content.slice(sec6Start);
+  const nextSecHeading = afterSec6.search(/\n## \d/);
+  const sec6 = nextSecHeading === -1 ? afterSec6 : afterSec6.slice(0, nextSecHeading);
+  assert.ok(sec6.includes("openclaw-sub"), "Section 6 fenced block must reference openclaw-sub");
+  assert.ok(
+    sec6.includes("npx openclaw-sub init"),
+    "Section 6 must include the npx quick-start command"
+  );
+  assert.ok(
+    sec6.includes("CLAUDE.md") || sec6.includes("AGENTS.md"),
+    "Section 6 must reference CLAUDE.md or AGENTS.md"
+  );
+});
+
 test("community contribution files exist and contain required sections", () => {
   const contributing = fs.readFileSync(fileURLToPath(new URL("../CONTRIBUTING.md", import.meta.url)), "utf8");
   assert.ok(contributing.includes("buildCommand"), "CONTRIBUTING.md must document buildCommand");
