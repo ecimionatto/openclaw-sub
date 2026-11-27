@@ -1,0 +1,12 @@
+{
+  "id": "task-03",
+  "title": "eval metrics accepts tick-only logs",
+  "prompt": "Update `clawsub eval metrics` so that when the log file contains only `tick:` heartbeat lines and no work-loop event lines, the command exits 0 and reports 0 events per repo (or an empty result) instead of exiting 1 with an error. Currently `clawsub eval metrics --log <tick-only-file>` exits 1 with: `error: 0 events parsed from N non-blank line(s) — verify log contains work-loop events`. A log with only tick lines is a valid idle log; the command must treat it as 0 events and succeed.",
+  "acceptanceCriteria": [
+    "clawsub eval metrics --log <tick-only-log> exits 0",
+    "stdout reports 0 events (or an empty result) rather than an error message",
+    "exit code for a log with real events is unchanged",
+    "unit test covers the tick-only path"
+  ],
+  "acceptanceTest": "../tests/task-03.test.mjs"
+}

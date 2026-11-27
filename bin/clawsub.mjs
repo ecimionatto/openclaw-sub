@@ -25,6 +25,8 @@ import {
   recordVersionSnapshot,
 } from "../src/versions.mjs";
 import { installSystemdService } from "../src/ubuntu-systemd.mjs";
+import { evalMetrics } from "../src/eval/metrics.mjs";
+import { evalReplay } from "../src/eval/replay.mjs";
 import { loopInit } from "../src/loop.mjs";
 
 function printHelp() {
@@ -42,6 +44,8 @@ Usage:
   clawsub baton [--session <key>] [--clear] [--json]
   clawsub doctor [--json]
   clawsub savings [--json]
+  clawsub eval metrics --log <file> [--board <file>] [--repo <repo>] [--json]
+  clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] --dry-run
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
@@ -635,6 +639,33 @@ function main() {
   if (subcmd === "savings") {
     cmdSavings(flags);
     return;
+  }
+
+  if (subcmd === "eval") {
+    const evalSubcmd = positional[1];
+    if (evalSubcmd === "metrics") {
+      if (!flags.log) {
+        console.error("Usage: clawsub eval metrics --log <file> [--board <file>] [--repo <repo>] [--json]");
+        process.exit(1);
+      }
+      evalMetrics({ logPath: flags.log, boardPath: flags.board, repo: flags.repo, json: flags.json });
+      return;
+    }
+    if (evalSubcmd === "replay") {
+      if (!flags.task) {
+        console.error("Usage: clawsub eval replay --task <id> [--tasks-dir <dir>] [--json] --dry-run");
+        process.exit(1);
+      }
+      if (!flags["dry-run"]) {
+        console.error("error: live replay not implemented -- pass --dry-run to preview the plan");
+        process.exit(1);
+      }
+      evalReplay({ taskId: flags.task, tasksDir: flags["tasks-dir"], json: flags.json });
+      return;
+    }
+    console.error(`Unknown eval subcommand: ${evalSubcmd}`);
+    console.error("Available: metrics, replay");
+    process.exit(1);
   }
 
   if (subcmd === "baton") {
