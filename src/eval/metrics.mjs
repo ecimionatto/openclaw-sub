@@ -176,14 +176,13 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
 function groupByTask(events, boardRows = []) {
   const tasks = new Map();
   for (const ev of events) {
-    if (!tasks.has(ev.taskId)) tasks.set(ev.taskId, { repo: ev.repo, taskId: ev.taskId, events: [], boardRow: null });
-    tasks.get(ev.taskId).events.push(ev);
+    const key = `${ev.repo}::${ev.taskId}`;
+    if (!tasks.has(key)) tasks.set(key, { repo: ev.repo, taskId: ev.taskId, events: [], boardRow: null });
+    tasks.get(key).events.push(ev);
   }
   for (const row of boardRows) {
-    if (tasks.has(row.taskId)) {
-      tasks.get(row.taskId).boardRow = row;
-    } else {
-      tasks.set(row.taskId, { repo: row.repo, taskId: row.taskId, events: [], boardRow: row });
+    for (const task of tasks.values()) {
+      if (task.taskId === row.taskId) task.boardRow = row;
     }
   }
   return [...tasks.values()];

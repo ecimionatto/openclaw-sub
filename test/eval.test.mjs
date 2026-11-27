@@ -1,4 +1,3 @@
-import { parseBoard } from "../src/eval/metrics.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -7,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { computeMetrics, parseLog } from "../src/eval/metrics.mjs";
+import { computeMetrics, parseBoard, parseLog } from "../src/eval/metrics.mjs";
 import { listTasks, loadTask, replayDryRun } from "../src/eval/replay.mjs";
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "clawsub.mjs");
@@ -433,4 +432,49 @@ test("eval metrics --repo that matches events exits 0 with no warning", () => {
   } finally {
     fs.rmSync(tmpDir, { recursive: true });
   }
+});
+
+test("computeMetrics: board rows absent from log do not inflate taskCount, rescopeRate, or fixRunsPerMergedPR", () => {
+  const logText = `\
+2026-11-26T10:00:00Z repo:org/r task:T-01 spawned
+2026-11-26T10:01:00Z repo:org/r task:T-01 reviewed -> FIX
+2026-11-26T10:02:00Z repo:org/r task:T-01 fix attempt 1
+2026-11-26T10:03:00Z repo:org/r task:T-01 reviewed -> APPROVE
+2026-11-26T10:05:00Z repo:org/r task:T-01 merged
+2026-11-26T11:00:00Z repo:org/r task:T-02 spawned
+2026-11-26T11:01:00Z repo:org/r task:T-02 rescope
+`;
+  const boardText = [
+    "| ID | Tier | Title | Why | Files | DV | Status | PR |",
+    "|---|---|---|---|---|---|---|---|",
+    "| T-01 | Must | Task 01 | reason | f | no | merged 2026-11-26 | |",
+    "| T-02 | Must | Task 02 | reason | f | no | rescope | |",
+    "| T-03 | Must | Never started | reason | f | no | ready | |",
+    "| T-04 | Must | Old task | reason | f | no | merged 2025-01-01 | |",
+  ].join("\n");
+  const events = parseLog(logText);
+  const boardRows = parseBoard(boardText);
+  assert.equal(boardRows.length, 4, "board has 4 rows including 2 log-absent ones");
+  const m = computeMetrics(events, { boardRows })["org/r"];
+  assert.equal(m.taskCount, 2, "board-only rows (ready, historical merged) must not inflate taskCount");
+  assert.equal(m.rescopeRate, 50, "rescope rate based on log tasks only");
+  assert.equal(m.fixRunsPerMergedPR, 1, "fix runs denominator is only merged tasks with log history");
+});
+
+test("computeMetrics: same taskId in two different repos yields separate per-repo metrics", () => {
+  const logText = `\
+2026-11-26T10:00:00Z repo:org/alpha task:T-01 spawned
+2026-11-26T10:01:00Z repo:org/alpha task:T-01 reviewed -> APPROVE
+2026-11-26T10:02:00Z repo:org/alpha task:T-01 merged
+2026-11-26T11:00:00Z repo:org/beta task:T-01 spawned
+2026-11-26T11:01:00Z repo:org/beta task:T-01 reviewed -> FIX
+`;
+  const events = parseLog(logText);
+  const metrics = computeMetrics(events);
+  assert.ok("org/alpha" in metrics, "alpha repo must have its own entry");
+  assert.ok("org/beta" in metrics, "beta repo must have its own entry");
+  assert.equal(metrics["org/alpha"].taskCount, 1);
+  assert.equal(metrics["org/beta"].taskCount, 1);
+  assert.equal(metrics["org/alpha"].firstPassApproveRate, 100);
+  assert.equal(metrics["org/beta"].firstPassApproveRate, 0);
 });
