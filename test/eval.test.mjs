@@ -136,6 +136,26 @@ test("computeMetrics: repo filter isolates one repo", () => {
   assert.ok("org/repo" in filtered);
 });
 
+test("parseLog + computeMetrics: unmapped prefix with opened URL uses single repo for all events", () => {
+  const text = [
+    "2026-11-26 10:00:00 tick: inflight=0 ready=1 events=0",
+    "spawned XX-01 pid=100",
+    "XX-01 opened https://github.com/acme/widget/pull/42",
+    "XX-01: reviewed -> APPROVE",
+    "XX-01 merged",
+  ].join("\n");
+  const events = parseLog(text);
+  assert.equal(events.length, 4, `expected 4 events, got ${events.length}`);
+  const repos = [...new Set(events.map((e) => e.repo))];
+  assert.equal(repos.length, 1, `expected 1 repo, got ${repos.length}: ${repos.join(", ")}`);
+  assert.equal(repos[0], "acme/widget");
+  const metrics = computeMetrics(events);
+  const repoKeys = Object.keys(metrics);
+  assert.equal(repoKeys.length, 1, `expected 1 repo in metrics, got ${repoKeys.length}: ${repoKeys.join(", ")}`);
+  assert.equal(repoKeys[0], "acme/widget");
+  assert.equal(metrics["acme/widget"].taskCount, 1);
+});
+
 test("computeMetrics: rescope rate with rescoped task", () => {
   const logWithRescope = `\
 2026-11-26T10:00:00Z repo:org/r task:T-1 spawned

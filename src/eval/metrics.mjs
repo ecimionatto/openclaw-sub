@@ -46,10 +46,24 @@ export function parseBoard(text, { repoMap = PREFIX_REPO_MAP } = {}) {
 }
 
 export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
+  const lines = String(text || "").split("\n");
+
+  // First pass: build taskId→repo from opened PR URLs so all events for a task share one repo
+  const taskRepoOverride = {};
+  const OPENED_URL_RE = /^([A-Z]+-[A-Za-z0-9]+)\s+opened\s+https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/;
+  for (const raw of lines) {
+    const m = OPENED_URL_RE.exec(raw.trim());
+    if (m) taskRepoOverride[m[1]] = m[2];
+  }
+
+  function repoFor(taskId) {
+    return taskRepoOverride[taskId] || repoFromTaskId(taskId, repoMap);
+  }
+
   const events = [];
   let lastTickTs = null;
 
-  for (const raw of String(text || "").split("\n")) {
+  for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
 
@@ -77,7 +91,7 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: ("spawned" + (m[2] || "")).trim(),
       });
@@ -85,11 +99,11 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     }
 
     // 2. "CS-14 opened https://github.com/ecimionatto/openclaw-sub/pull/9"
-    m = /^([A-Z]+-[A-Za-z0-9]+)\s+opened\s+(https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+.*)$/.exec(line);
+    m = /^([A-Z]+-[A-Za-z0-9]+)\s+opened\s+(https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+.*)$/.exec(line);
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: m[3] || repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: `opened ${m[2].trim()}`,
       });
@@ -101,7 +115,7 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: m[2].trim(),
       });
@@ -113,7 +127,7 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: `fix ${m[2].trim()}`,
       });
@@ -125,7 +139,7 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: ("rescope" + (m[2] || "")).trim(),
       });
@@ -137,7 +151,7 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: ("merged" + (m[2] || "")).trim(),
       });
@@ -148,7 +162,7 @@ export function parseLog(text, { repoMap = PREFIX_REPO_MAP } = {}) {
     if (m) {
       events.push({
         ts: lastTickTs,
-        repo: repoFromTaskId(m[1], repoMap),
+        repo: repoFor(m[1]),
         taskId: m[1],
         event: ("merged" + (m[2] || "")).trim(),
       });
