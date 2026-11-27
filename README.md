@@ -129,6 +129,66 @@ Providers:
 
 ---
 
+## Chain Configuration
+
+The `chain` field in `~/.openclaw/clawsub.json` (or `--chain` on the CLI) controls which subscription CLIs are tried and in what order.
+
+### String shorthand (simplest)
+```bash
+npx openclaw-sub init --chain claude,codex,agy
+```
+
+### Model-specific entries — `provider:model`
+Route to a specific model tier (tracked independently for quota):
+```bash
+npx openclaw-sub init --chain claude:opus,claude:sonnet,codex
+```
+If `claude:opus` hits its weekly limit, `claude:sonnet` is still tried before falling back to `codex`.
+
+### Optional entries — `provider?`
+Skip silently if the CLI binary is not installed:
+```bash
+npx openclaw-sub init --chain claude,codex,agy?
+# agy is optional — missing binary = skip, not an error
+```
+
+### Object entries in `clawsub.json`
+Full object syntax supports all fields:
+```json
+{
+  "chain": [
+    { "provider": "claude", "model": "opus" },
+    { "provider": "claude", "model": "sonnet", "optional": true },
+    { "provider": "codex", "args": ["--dangerously-skip-permissions"] },
+    { "provider": "agy", "optional": true }
+  ]
+}
+```
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `provider` | string | required | Provider ID: `claude`, `codex`, `agy`, `ollama` |
+| `model` | string | (provider default) | Model to pass via `--model`. Quota tracked per `provider:model` key. |
+| `optional` | boolean | `false` | Silently skip if binary not installed |
+| `failover` | boolean | `true` | `false` = stop chain here on any failure (no fall-through) |
+| `args` | string[] | `[]` | Extra CLI flags passed to `buildCommand` as `extraArgs` |
+
+### `--no-failover` / top-level `failover: false`
+Single-agent mode — only `chain[0]` is ever used. Re-running `init` without `--no-failover` turns failover back on:
+```bash
+npx openclaw-sub init --chain claude --no-failover   # single-agent mode
+npx openclaw-sub init --chain claude,codex            # failover restored
+```
+
+### Per-entry `failover: false`
+Stop the chain at a specific entry even when other entries remain:
+```json
+{ "chain": [{ "provider": "claude", "failover": false }, "codex"] }
+```
+If `claude` fails for any reason (auth, quota, exec error, or cooldown), `codex` is **not** tried.
+
+---
+
 ## CLI Commands
 
 ### Check live status & active cooldown timers

@@ -1590,15 +1590,19 @@ test("routePrompt: same provider twice with different models both attempted on f
     quotaReservationWindows: [],
   };
   let call = 0;
-  const runner = () => {
+  const passedModels = [];
+  const runner = ({ args }) => {
     call++;
-    if (call === 1) return { exitCode: 0, stdout: "OPUS_OK", stderr: "", latencyMs: 10 };
+    passedModels.push(args);
+    // First call (opus) fails; second call (sonnet) succeeds
+    if (call === 1) return { exitCode: 1, stdout: "", stderr: "opus_error", latencyMs: 10 };
     return { exitCode: 0, stdout: "SONNET_OK", stderr: "", latencyMs: 10 };
   };
   const result = routePrompt("hello", { now, state, config, runner });
   assert.equal(result.ok, true);
-  assert.equal(result.output, "OPUS_OK");
-  assert.equal(call, 1);
+  assert.equal(result.output, "SONNET_OK");
+  assert.equal(call, 2, "both models must be attempted when first fails");
+  assert.ok(passedModels[1]?.includes("sonnet"), "second call must use the sonnet model");
 });
 
 test("routePrompt: optional entry silently skipped when not installed", () => {
@@ -1637,12 +1641,21 @@ test("routePrompt: required entry missing causes error (not skipped)", () => {
     quotaReservationWindows: [],
   };
   const runner = () => ({ exitCode: 1, stdout: "", stderr: "error", latencyMs: 10 });
+  // Neither provider is in installedProviders — but both are required (optional:false)
+  // so they must NOT be silently skipped; the router should still attempt them and report exec_error
   const result = routePrompt("hello", {
     now, state, config, runner,
-    installedProviders: new Set(["claude", "codex"]),
+    installedProviders: new Set([]),
   });
   assert.equal(result.ok, false);
-  assert.ok(result.attempts.every((a) => a.status !== "skipped_optional_not_installed"));
+  assert.ok(
+    result.attempts.every((a) => a.status !== "skipped_optional_not_installed"),
+    "required entries must not be silently skipped even when binary is missing"
+  );
+  assert.ok(
+    result.attempts.some((a) => a.status === "exec_error"),
+    "required missing entries must produce exec_error"
+  );
 });
 
 test("routePrompt: per-entry failover:false stops chain on exec error", () => {
@@ -1714,15 +1727,170 @@ test("runDoctor: optional uninstalled provider is info not error", () => {
   };
   saveConfig(config, tmpDir);
 
-  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  // Use installedProviders to make the test deterministic regardless of host environment
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir, installedProviders: new Set(["claude"]) });
   const agyProvider = report.providers.find((p) => p.id === "agy");
   assert.ok(agyProvider, "agy must appear in providers");
   assert.equal(agyProvider.optional, true);
-  // agy not installed in CI → must be in recommendations, not issues
-  if (!agyProvider.installed) {
-    const issueAboutAgy = report.issues.some((i) => /agy/i.test(i) && /not installed/.test(i));
-    assert.equal(issueAboutAgy, false, "optional uninstalled provider must not create an issue");
-    const recAboutAgy = report.recommendations.some((r) => /optional/.test(r) && /agy/i.test(r));
-    assert.ok(recAboutAgy, "optional uninstalled provider must appear in recommendations");
-  }
+  assert.equal(agyProvider.installed, false, "agy is deterministically not installed via installedProviders");
+  const issueAboutAgy = report.issues.some((i) => /agy/i.test(i) && /not installed/.test(i));
+  assert.equal(issueAboutAgy, false, "optional uninstalled provider must not create an issue");
+  const recAboutAgy = report.recommendations.some((r) => /optional/.test(r) && /agy/i.test(r));
+  assert.ok(recAboutAgy, "optional uninstalled provider must appear in recommendations");
+});
+
+// ── CS-20: new coverage for review issues ────────────────────────────────────
+
+test("routePrompt: per-entry failover:false stops chain on auth failure", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", failover: false }, "codex"],
+    workspace: "/tmp", quietWindows: [], quotaReservationWindows: [],
+  };
+  const commandsSeen = [];
+  const runner = ({ command }) => {
+    commandsSeen.push(command);
+    return { exitCode: 1, stdout: "", stderr: "OAuth token refresh failed: token expired", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.failoverStopped, true, "failoverStopped must be true");
+  assert.ok(!commandsSeen.includes("codex"), "codex must NOT be tried when failover:false stops on auth");
+});
+
+test("routePrompt: per-entry failover:false stops chain on quota exhaustion", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", failover: false }, "codex"],
+    workspace: "/tmp", quietWindows: [], quotaReservationWindows: [],
+    defaultCooldownMinutes: 60, cooldownBufferMinutes: 5,
+  };
+  const commandsSeen = [];
+  const runner = ({ command }) => {
+    commandsSeen.push(command);
+    return {
+      exitCode: 1,
+      stdout: '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
+      stderr: "", latencyMs: 10,
+    };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.failoverStopped, true, "failoverStopped must be true");
+  assert.ok(!commandsSeen.includes("codex"), "codex must NOT be tried when failover:false stops on quota");
+});
+
+test("routePrompt: per-entry failover:false stops chain on cooldown fast-skip", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const future = new Date(now.getTime() + 60 * 60_000);
+  const state = {
+    providers: { claude: { status: "cooldown", cooldownUntil: future.toISOString() } },
+  };
+  const config = {
+    chain: [{ provider: "claude", failover: false }, "codex"],
+    workspace: "/tmp", quietWindows: [], quotaReservationWindows: [],
+  };
+  const commandsSeen = [];
+  const runner = ({ command }) => {
+    commandsSeen.push(command);
+    return { exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.failoverStopped, true, "failoverStopped must be true on cooldown fast-skip");
+  assert.ok(!commandsSeen.includes("codex"), "codex must NOT be tried when failover:false stops on cooldown");
+});
+
+test("routePrompt rejects empty chain via validateConfig", () => {
+  const config = { chain: [], workspace: "/tmp", quietWindows: [], quotaReservationWindows: [] };
+  const result = routePrompt("hello", { config, state: { providers: {} } });
+  assert.equal(result.ok, false);
+  assert.match(result.output, /Invalid config/);
+});
+
+test("routePrompt: per-entry args are passed to buildCommand as extraArgs", () => {
+  const receivedArgs = [];
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", args: ["--dangerously-skip-permissions"] }],
+    workspace: "/tmp", quietWindows: [], quotaReservationWindows: [],
+  };
+  const runner = ({ args }) => {
+    receivedArgs.push(...(args || []));
+    return { exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, true);
+  assert.ok(
+    receivedArgs.includes("--dangerously-skip-permissions"),
+    "per-entry args must reach the CLI command"
+  );
+});
+
+test("cmdInit: --chain with model and optional parses correctly via normalizeChain", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-chain-"));
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  spawnSync(
+    process.execPath,
+    [binPath, "init", "--chain", "claude:opus,codex,agy?"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  const configPath = path.join(tmpDir, "clawsub.json");
+  assert.ok(fs.existsSync(configPath), "clawsub.json must be written");
+  const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(saved.chain.length, 3);
+  assert.equal(saved.chain[0].provider, "claude");
+  assert.equal(saved.chain[0].model, "opus");
+  assert.equal(saved.chain[1].provider ?? saved.chain[1], "codex");
+  const agyEntry = typeof saved.chain[2] === "string" ? { provider: saved.chain[2] } : saved.chain[2];
+  assert.equal(agyEntry.provider, "agy");
+  assert.equal(agyEntry.optional, true);
+});
+
+test("cmdInit: --no-failover saves failover:false; re-init without it removes failover:false", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-reinit-failover-"));
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+
+  // First init with --no-failover
+  spawnSync(
+    process.execPath,
+    [binPath, "init", "--chain", "claude", "--no-failover"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  const configPath = path.join(tmpDir, "clawsub.json");
+  const withNoFailover = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.equal(withNoFailover.failover, false, "--no-failover must save failover:false");
+
+  // Re-init without --no-failover must remove failover:false
+  spawnSync(
+    process.execPath,
+    [binPath, "init", "--chain", "claude,codex"],
+    { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+  );
+  const withFailoverRestored = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.ok(
+    withFailoverRestored.failover !== false,
+    "re-init without --no-failover must not keep failover:false"
+  );
+});
+
+test("runDoctor: required missing provider is an issue, not a recommendation", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doctor-req-"));
+  const config = {
+    chain: [{ provider: "claude", optional: false }],
+    workspace: tmpDir,
+  };
+  saveConfig(config, tmpDir);
+
+  // claude is required but not installed
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir, installedProviders: new Set([]) });
+  const claudeProvider = report.providers.find((p) => p.id === "claude");
+  assert.ok(claudeProvider, "claude must appear in providers");
+  assert.equal(claudeProvider.optional, false);
+  assert.equal(claudeProvider.installed, false);
+  const issueAboutClaude = report.issues.some((i) => /claude/i.test(i) && /not installed/.test(i));
+  assert.ok(issueAboutClaude, "required missing provider must produce an issue (not a recommendation)");
 });

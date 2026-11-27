@@ -14,8 +14,10 @@ import {
   getProviderCooldown,
   loadConfig,
   loadState,
+  normalizeChain,
   saveConfig,
   saveState,
+  validateConfig,
 } from "../src/state.mjs";
 import {
   CLAWSUB_VERSION,
@@ -99,22 +101,20 @@ function cmdInit(flags) {
   const stateDir = getDefaultStateDir();
   const existing = loadConfig(stateDir);
   const requestedChain = flags.chain
-    ? String(flags.chain).split(",").map((s) => {
-        const t = s.trim();
-        const optional = t.endsWith("?");
-        const spec = optional ? t.slice(0, -1) : t;
-        const colonIdx = spec.indexOf(":");
-        if (colonIdx !== -1 || optional) {
-          const entry = colonIdx !== -1
-            ? { provider: spec.slice(0, colonIdx).toLowerCase(), model: spec.slice(colonIdx + 1) }
-            : { provider: spec.toLowerCase() };
-          if (optional) entry.optional = true;
-          return entry;
-        }
-        return spec.toLowerCase();
-      }).filter(Boolean)
+    ? normalizeChain(
+        String(flags.chain)
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean)
+      ).filter((e) => e.provider)
     : existing.chain || ["claude", "codex", "agy"];
   const noFailover = flags["no-failover"] === true;
+
+  const chainErrors = validateConfig({ chain: requestedChain }, PROVIDERS);
+  if (chainErrors.length > 0) {
+    console.error(`Error: invalid --chain — ${chainErrors.join("; ")}`);
+    process.exit(1);
+  }
 
   const workspace = flags.workspace || existing.workspace || process.cwd();
   const openclawVersion = flags["openclaw-version"] || "latest";
@@ -167,12 +167,15 @@ function cmdInit(flags) {
   }
 
   console.log("\n[3/5] Writing Subscription-Saver Config, Cooldown Shims & Version Snapshot...");
+  // Always write failover field explicitly: false when --no-failover, undefined (removed) otherwise.
+  // This allows re-init without --no-failover to turn failover back on even if it was previously disabled.
+  const { failover: _existingFailover, ...existingWithoutFailover } = existing;
   const saved = saveConfig(
     {
-      ...existing,
+      ...existingWithoutFailover,
       chain: requestedChain,
-      ...(noFailover && { failover: false }),
       workspace,
+      ...(noFailover && { failover: false }),
     },
     stateDir
   );

@@ -15,6 +15,7 @@ import {
   normalizeChain,
   recordTurnSavings,
   saveState,
+  validateConfig,
 } from "./state.mjs";
 
 function isProviderBinaryInstalled(entry, provider, opts) {
@@ -34,8 +35,10 @@ function isProviderBinaryInstalled(entry, provider, opts) {
  * `{provider, model?, optional?, failover?, args?}`.
  *
  * - `optional: true` — silently skip if CLI binary not installed
- * - `failover: false` on an entry — stop chain on failure (no fall-through to next)
+ * - `failover: false` on an entry — stop chain on any failure (cooldown, auth, quota, exec)
  * - top-level `config.failover: false` — single-agent mode, only chain[0] is used
+ *
+ * State keys are `provider` or `provider:model` so claude:opus and claude:sonnet track independently.
  *
  * @param {string} prompt
  * @param {{
@@ -59,6 +62,12 @@ export function routePrompt(prompt, opts = {}) {
   const sessionKey = opts.sessionKey || "main";
   const runner = opts.runner || defaultCommandRunner;
   const heartbeat = isHeartbeatPrompt(prompt);
+
+  // Validate config before routing
+  const configErrors = validateConfig(config, PROVIDERS);
+  if (configErrors.length > 0) {
+    return { ok: false, provider: null, output: `Invalid config: ${configErrors.join("; ")}`, attempts: [] };
+  }
 
   // 1. Check quiet windows & quota-reservation windows for background heartbeats
   if (heartbeat) {
@@ -107,10 +116,13 @@ export function routePrompt(prompt, opts = {}) {
       continue;
     }
 
+    // Model-specific state key so claude:opus and claude:sonnet track quota independently
+    const stateKey = entry.model ? `${providerId}:${entry.model}` : providerId;
+
     // 2. Fast-skip providers currently in active quota cooldown (0ms overhead)
-    const cd = getProviderCooldown(state, providerId, now);
+    const cd = getProviderCooldown(state, stateKey, now);
     if (cd.coolingDown) {
-      const pState = state.providers?.[providerId] || {};
+      const pState = state.providers?.[stateKey] || {};
       const authExpired = pState.status === "auth_expired";
       attempts.push({
         provider: providerId,
@@ -119,6 +131,17 @@ export function routePrompt(prompt, opts = {}) {
         remainingMinutes: cd.remainingMinutes,
         ...(authExpired && pState.remediation && { remediation: pState.remediation }),
       });
+      if (entry.failover === false) {
+        return {
+          ok: false,
+          provider: providerId,
+          output: authExpired
+            ? `${providerId} auth expired — run \`${pState.remediation || `openclaw models auth login --provider ${providerId} --force`}\``
+            : `${providerId} is in quota cooldown until ${cd.until} (~${cd.remainingMinutes} min)`,
+          failoverStopped: true,
+          attempts,
+        };
+      }
       continue;
     }
 
@@ -150,8 +173,8 @@ export function routePrompt(prompt, opts = {}) {
     // 5a. Auth failure -> 6h cooldown
     if ((result.exitCode !== 0 || result.error) && isAuthError(combinedOutput)) {
       const until = new Date(now.getTime() + 6 * 3600_000);
-      state.providers[providerId] = {
-        ...(state.providers[providerId] || {}),
+      state.providers[stateKey] = {
+        ...(state.providers[stateKey] || {}),
         status: "auth_expired",
         cooldownUntil: until.toISOString(),
         lastErrorAt: now.toISOString(),
@@ -167,6 +190,15 @@ export function routePrompt(prompt, opts = {}) {
         cooldownUntil: until.toISOString(),
         remediation: `openclaw models auth login --provider ${providerId} --force`,
       });
+      if (entry.failover === false) {
+        return {
+          ok: false,
+          provider: providerId,
+          output: combinedOutput || `${providerId} auth expired`,
+          failoverStopped: true,
+          attempts,
+        };
+      }
       continue;
     }
 
@@ -177,7 +209,7 @@ export function routePrompt(prompt, opts = {}) {
         defaultMinutes: config.defaultCooldownMinutes ?? 60,
         bufferMinutes: config.cooldownBufferMinutes ?? 5,
       });
-      state.providers[providerId] = {
+      state.providers[stateKey] = {
         status: "cooldown",
         cooldownUntil: until.toISOString(),
         lastLimitAt: now.toISOString(),
@@ -208,13 +240,22 @@ export function routePrompt(prompt, opts = {}) {
         latencyMs: result.latencyMs,
         handoffRecorded: !heartbeat,
       });
+      if (entry.failover === false) {
+        return {
+          ok: false,
+          provider: providerId,
+          output: combinedOutput || `${providerId} quota exhausted`,
+          failoverStopped: true,
+          attempts,
+        };
+      }
       continue;
     }
 
     // 6. Non-quota execution failure
     if (result.exitCode !== 0 || !result.stdout) {
-      state.providers[providerId] = {
-        ...(state.providers[providerId] || {}),
+      state.providers[stateKey] = {
+        ...(state.providers[stateKey] || {}),
         status: "error",
         lastErrorAt: now.toISOString(),
         lastError: combinedOutput.slice(-400) || `exit code ${result.exitCode}`,
@@ -242,7 +283,7 @@ export function routePrompt(prompt, opts = {}) {
     }
 
     // 7. Success
-    state.providers[providerId] = {
+    state.providers[stateKey] = {
       status: "healthy",
       cooldownUntil: null,
       lastSuccessAt: now.toISOString(),
@@ -300,34 +341,54 @@ export function routePrompt(prompt, opts = {}) {
     };
   }
 
-  const chainProviderIds = chain.map((e) => e.provider);
+  // Clear error when single-agent mode (failover:false) has optional chain[0] that isn't installed
+  if (
+    config.failover === false &&
+    attempts.length === 1 &&
+    attempts[0].status === "skipped_optional_not_installed"
+  ) {
+    return {
+      ok: false,
+      provider: null,
+      output: `Single-agent mode (failover: false): ${chain[0].provider} is optional and not installed — nothing to run. Install it or remove failover: false to enable chain failover.`,
+      attempts,
+    };
+  }
+
   const chainDisplay = chain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(" -> ");
 
-  const authExpiredIds = chainProviderIds.filter(
-    (id) => state.providers?.[id]?.status === "auth_expired"
-  );
-  const quotaCooldowns = chainProviderIds
-    .filter((id) => !authExpiredIds.includes(id))
-    .map((id) => ({ id, ...getProviderCooldown(state, id, now) }))
+  // Look up auth/cooldown status per stateKey
+  const authExpiredEntries = chain.filter((e) => {
+    const sk = e.model ? `${e.provider}:${e.model}` : e.provider;
+    return state.providers?.[sk]?.status === "auth_expired";
+  });
+
+  const quotaCooldowns = chain
+    .filter((e) => !authExpiredEntries.some((ae) => ae.provider === e.provider && ae.model === e.model))
+    .map((e) => {
+      const sk = e.model ? `${e.provider}:${e.model}` : e.provider;
+      return { id: e.provider, ...getProviderCooldown(state, sk, now) };
+    })
     .filter((c) => c.coolingDown && c.until)
     .sort((a, b) => new Date(a.until).getTime() - new Date(b.until).getTime());
 
   const earliest = quotaCooldowns[0];
-  const authLines = authExpiredIds
-    .map((id) => {
-      const rem = state.providers[id]?.remediation;
-      return rem ? `  ${id}: auth expired, run \`${rem}\`` : `  ${id}: auth expired`;
+  const authLines = authExpiredEntries
+    .map((e) => {
+      const sk = e.model ? `${e.provider}:${e.model}` : e.provider;
+      const rem = state.providers[sk]?.remediation;
+      return rem ? `  ${e.provider}: auth expired, run \`${rem}\`` : `  ${e.provider}: auth expired`;
     })
     .join("\n");
 
   let resetMsg;
-  if (authExpiredIds.length > 0 && quotaCooldowns.length === 0) {
+  if (authExpiredEntries.length > 0 && quotaCooldowns.length === 0) {
     resetMsg = `All configured subscription CLIs (${chainDisplay}) have expired credentials:\n${authLines}`;
   } else if (earliest) {
-    const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
+    const authNote = authExpiredEntries.length > 0 ? `\nAuth expired:\n${authLines}` : "";
     resetMsg = `All configured subscription CLIs (${chainDisplay}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
   } else {
-    const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
+    const authNote = authExpiredEntries.length > 0 ? `\nAuth expired:\n${authLines}` : "";
     resetMsg = `All configured subscription CLIs (${chainDisplay}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authNote}`;
   }
 
@@ -335,7 +396,7 @@ export function routePrompt(prompt, opts = {}) {
     ok: false,
     provider: null,
     output: resetMsg,
-    allCoolingDown: quotaCooldowns.length > 0 || authExpiredIds.length > 0,
+    allCoolingDown: quotaCooldowns.length > 0 || authExpiredEntries.length > 0,
     attempts,
   };
 }
