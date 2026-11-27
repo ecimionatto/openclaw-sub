@@ -187,7 +187,7 @@ function cmdInit(flags) {
   );
   const integration = generateOpenClawIntegration({
     stateDir,
-    chain: saved.chain,
+    chain: saved.chain.map((e) => (typeof e === "string" ? e : e.provider)),
     workspace: saved.workspace,
   });
   const snap = recordVersionSnapshot(stateDir, "init");

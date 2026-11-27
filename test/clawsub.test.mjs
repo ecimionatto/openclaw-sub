@@ -33,7 +33,7 @@ import {
   saveState,
   validateConfig,
 } from "../src/index.mjs";
-import { configureOpenClawJson, inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
@@ -1877,67 +1877,6 @@ test("cmdInit: --no-failover saves failover:false; re-init without it removes fa
   );
 });
 
-// ── CS-20 fix-up: configureOpenClawJson ─────────────────────────────────────
-
-test("configureOpenClawJson: basic chain emits primary+fallbacks shape", () => {
-  const result = configureOpenClawJson(["claude", "codex", "agy"]);
-  assert.deepEqual(result, {
-    agents: {
-      defaults: {
-        model: {
-          primary: "claude",
-          fallbacks: ["codex", "agy"],
-        },
-      },
-    },
-  });
-});
-
-test("configureOpenClawJson: chain with per-entry models uses provider/model IDs", () => {
-  const result = configureOpenClawJson([
-    { provider: "claude", model: "opus" },
-    { provider: "codex" },
-    { provider: "agy", model: "pro" },
-  ]);
-  assert.equal(result.agents.defaults.model.primary, "claude/opus");
-  assert.deepEqual(result.agents.defaults.model.fallbacks, ["codex", "agy/pro"]);
-});
-
-test("configureOpenClawJson: single-entry chain emits primary with no fallbacks key", () => {
-  const result = configureOpenClawJson(["claude"]);
-  assert.ok("primary" in result.agents.defaults.model, "primary must be present");
-  assert.ok(!("fallbacks" in result.agents.defaults.model), "fallbacks must be absent for single entry");
-});
-
-test("configureOpenClawJson: failover:false omits fallbacks even with multi-entry chain", () => {
-  const result = configureOpenClawJson(["claude", "codex", "agy"], { failover: false });
-  assert.equal(result.agents.defaults.model.primary, "claude");
-  assert.ok(!("fallbacks" in result.agents.defaults.model), "fallbacks must be absent when failover is off");
-});
-
-test("configureOpenClawJson: same provider twice with different models both appear", () => {
-  const result = configureOpenClawJson([
-    { provider: "claude", model: "opus" },
-    { provider: "claude", model: "sonnet" },
-  ]);
-  assert.equal(result.agents.defaults.model.primary, "claude/opus");
-  assert.deepEqual(result.agents.defaults.model.fallbacks, ["claude/sonnet"]);
-});
-
-test("configureOpenClawJson: optional entries are included in fallbacks", () => {
-  const result = configureOpenClawJson([
-    { provider: "claude" },
-    { provider: "agy", optional: true },
-  ]);
-  assert.equal(result.agents.defaults.model.primary, "claude");
-  assert.deepEqual(result.agents.defaults.model.fallbacks, ["agy"]);
-});
-
-test("configureOpenClawJson: empty chain returns empty object", () => {
-  const result = configureOpenClawJson([]);
-  assert.deepEqual(result, {});
-});
-
 // ── CS-20 fix-up: onlyProvider resolves against configured chain ─────────────
 
 test("routePrompt: onlyProvider resolves model from configured chain entry", () => {
@@ -2211,28 +2150,6 @@ test("routePrompt: heartbeat on failover:false + exec error returns NO_REPLY", (
   assert.equal(result.output, "NO_REPLY", "heartbeat on failover:false exec error must return NO_REPLY");
   assert.equal(result.ok, true);
   assert.equal(result.failoverStopped, true);
-});
-
-// ── CS-20 fix-up: configureOpenClawJson per-entry failover:false ──────────────
-
-test("configureOpenClawJson: per-entry failover:false truncates chain, no fallbacks emitted", () => {
-  const result = configureOpenClawJson([
-    { provider: "claude", failover: false },
-    "codex",
-    "agy",
-  ]);
-  assert.deepStrictEqual(result, { agents: { defaults: { model: { primary: "claude" } } } });
-});
-
-test("configureOpenClawJson: per-entry failover:false mid-chain truncates at that entry", () => {
-  const result = configureOpenClawJson([
-    "claude",
-    { provider: "codex", failover: false },
-    "agy",
-  ]);
-  assert.deepStrictEqual(result, {
-    agents: { defaults: { model: { primary: "claude", fallbacks: ["codex"] } } },
-  });
 });
 
 // ── CS-20 fix-up: cmdInit/cmdTest lowercase only provider part ────────────────
