@@ -21,6 +21,7 @@
     ".well-known/",
     "llms.txt",
     "llms-full.txt",
+    "SKILL.md",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -35,6 +36,7 @@
   "keywords": [
     "openclaw",
     "openclaw-skill",
+    "agent-skills",
     "ubuntu",
     "claude-code",
     "codex",
