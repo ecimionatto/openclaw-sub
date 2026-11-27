@@ -1,0 +1,1 @@
+You are not logged in to Claude. Run 'claude auth login' to authenticate.

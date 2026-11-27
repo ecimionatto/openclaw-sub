@@ -31,6 +31,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Make stubs executable
-        run: chmod +x test/e2e/stubs/claude test/e2e/stubs/codex test/e2e/stubs/agy test/e2e/stubs/openclaw test/e2e/run.sh
+        run: chmod +x test/e2e/stubs/claude test/e2e/stubs/codex test/e2e/stubs/agy test/e2e/stubs/openclaw test/e2e/run.sh test/e2e/scenarios/run-all.sh test/e2e/scenarios/*.sh
       - name: Run e2e
         run: bash test/e2e/run.sh
+      - name: Run scenario matrix
+        run: bash test/e2e/scenarios/run-all.sh

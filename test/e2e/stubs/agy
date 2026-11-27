@@ -1,4 +1,10 @@
 #!/bin/sh
-# Stub: simulates Antigravity/Gemini CLI answering successfully
-echo "stub-agy-response: ok"
-exit 0
+# Stub: simulates Antigravity/Gemini CLI. STUB_AGY_MODE controls response.
+case "$1" in
+  --version) echo "1.0.0-stub"; exit 0 ;;
+  *)
+    case "${STUB_AGY_MODE:-ok}" in
+      limit) echo "Quota exceeded. Daily quota resets at 1:00 AM UTC." >&2; exit 1 ;;
+      *)     echo "stub-agy-response: ok"; exit 0 ;;
+    esac ;;
+esac

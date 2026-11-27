@@ -1,13 +1,12 @@
 #!/bin/sh
-# Stub: simulates Claude CLI
-# --version: reports installed, quota hit on prompt invocation
+# Stub: simulates Claude CLI. STUB_CLAUDE_MODE controls response.
 case "$1" in
-  --version)
-    echo "1.0.0-stub"
-    exit 0
-    ;;
+  --version) echo "1.0.0-stub"; exit 0 ;;
   *)
-    echo "You've hit your 5-hour limit. Resets at 11:59pm." >&2
-    exit 1
-    ;;
+    case "${STUB_CLAUDE_MODE:-limit}" in
+      ok)           echo "stub-claude-response: ok"; exit 0 ;;
+      auth_expired) echo "You are not logged in to Claude. Run 'claude auth login' to authenticate." >&2; exit 1 ;;
+      weekly_limit) echo "Claude AI usage limit reached. Your limit will reset on Monday, Dec 2, 2026 at 12:00 AM UTC." >&2; exit 1 ;;
+      *)            echo "You've hit your 5-hour limit. Resets at 11:59pm." >&2; exit 1 ;;
+    esac ;;
 esac

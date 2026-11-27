@@ -1,5 +1,11 @@
 #!/bin/sh
-# Stub: simulates Codex CLI answering successfully
-# argv: exec --skip-git-repo-check <prompt>
-echo "stub-codex-response: ok"
-exit 0
+# Stub: simulates Codex CLI. STUB_CODEX_MODE controls response.
+case "$1" in
+  --version) echo "1.0.0-stub"; exit 0 ;;
+  *)
+    case "${STUB_CODEX_MODE:-ok}" in
+      limit)        echo "Usage limit reached. Try again at 1:00 AM." >&2; exit 1 ;;
+      auth_expired) echo "Invalid API key or token expired. Please run 'codex auth' to re-authenticate." >&2; exit 1 ;;
+      *)            echo "stub-codex-response: ok"; exit 0 ;;
+    esac ;;
+esac
