@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # SC-08: uninstall / rollback restores original openclaw.json
+# SKIP_KNOWN_BUG=uninstall-command-missing: clawsub has no `uninstall` subcommand yet.
+# Manual rollback via backup copy is tested instead. See RELEASE-CHECKLIST.md v1.0 blockers.
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
 fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }
@@ -24,4 +26,5 @@ cp "$BACKUP" "$OPENCLAW_CONFIG"
 AFTER=$(cat "$OPENCLAW_CONFIG")
 [ "$AFTER" = "$ORIG_CONTENT" ] || fail "restore from backup failed"
 
-pass "uninstall/rollback: backup preserves original openclaw.json and restore succeeds"
+echo "  KNOWN-BUG [$SCENARIO]: no 'clawsub uninstall' command — only manual backup-based rollback tested. See RELEASE-CHECKLIST.md"
+pass "uninstall/rollback: backup preserves original openclaw.json and manual restore succeeds"

@@ -50,3 +50,8 @@
 - [ ] @ecimionatto approves PR
 - [ ] CI green on the merge commit
 - [ ] `npm publish --dry-run` completes without errors
+
+## v1.0 blockers (must fix before shipping)
+
+- [ ] **SC-07 KNOWN-BUG `init-no-merge-user-keys`**: `clawsub init` overwrites `openclaw.json` with a generated integration config without merging existing user-defined keys. User keys (e.g. custom plugins, provider overrides) survive only in the timestamped `.bak.*` backup. Init must read the existing `openclaw.json`, deep-merge user keys over generated defaults, and write the merged result so users do not lose their settings on re-init.
+- [ ] **SC-08 KNOWN-BUG `uninstall-command-missing`**: `clawsub` has no `uninstall` subcommand. SC-08 currently tests manual rollback via `cp` from the backup. A proper `clawsub uninstall` command is needed that removes shims, the router wrapper, and the OpenClaw profile entry, then optionally restores the most-recent `openclaw.json.bak.*` backup.

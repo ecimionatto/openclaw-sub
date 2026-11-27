@@ -2,7 +2,7 @@
 # SC-05: weekly limit -> cooldown with real reset ETA in state
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
-fail() { echo "  FAIL [$SCENARIO]: $1"; }
+fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }
 SCENARIO="05-weekly-limit"
 
 export STUB_CLAUDE_MODE=weekly_limit

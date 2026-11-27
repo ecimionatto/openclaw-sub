@@ -1497,14 +1497,48 @@ test("parseResetTime parses Claude weekly-limit date format", () => {
 
 test("init does not reset provider cooldown or auth_expired state", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
   try {
     const cooldownUntil = new Date(Date.now() + 3_600_000).toISOString();
-    saveState({ providers: { claude: { status: "cooldown", cooldownUntil } } }, tmp);
-    const before = loadState(tmp);
-    assert.equal(before.providers.claude.status, "cooldown", "state has cooldown before");
-    assert.equal(before.providers.claude.cooldownUntil, cooldownUntil, "cooldownUntil preserved");
+    const authExpiredAt = new Date(Date.now() - 1_000).toISOString();
+    saveState(
+      {
+        providers: {
+          claude: { status: "cooldown", cooldownUntil },
+          codex: { status: "auth_expired", authExpiredAt },
+        },
+      },
+      tmp,
+    );
+
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const result = spawnSync(process.execPath, ["./bin/clawsub.mjs", "init", "--chain", "claude,codex"], {
+      cwd: repoRoot,
+      env: { ...process.env, CLAWSUB_HOME: tmp, HOME: fakeHome },
+    });
+    assert.equal(result.status, 0, `clawsub init exited non-zero: ${result.stderr?.toString()}`);
+
+    const after = loadState(tmp);
+    assert.equal(after.providers.claude.status, "cooldown", "init must not reset claude cooldown status");
+    assert.equal(after.providers.claude.cooldownUntil, cooldownUntil, "init must not reset claude cooldownUntil");
+    assert.equal(after.providers.codex.status, "auth_expired", "init must not reset codex auth_expired status");
   } finally {
     fs.rmSync(tmp, { recursive: true });
+    fs.rmSync(fakeHome, { recursive: true });
+  }
+});
+
+test("guard: every scenario fail() function exits non-zero", () => {
+  const scenariosDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "e2e/scenarios");
+  const scripts = fs.readdirSync(scenariosDir).filter((f) => /^\d{2}-.*\.sh$/.test(f));
+  assert.ok(scripts.length > 0, "no scenario scripts found");
+  for (const script of scripts) {
+    const src = fs.readFileSync(path.join(scenariosDir, script), "utf8");
+    const failDef = src.match(/^fail\(\)\s*\{[^}]+\}/m)?.[0] ?? "";
+    assert.ok(
+      failDef.includes("exit 1") || failDef.includes("exit 1;"),
+      `${script}: fail() must call 'exit 1' — found: ${failDef || "(no fail() definition)"}`,
+    );
   }
 });
 
