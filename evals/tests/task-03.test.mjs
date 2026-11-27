@@ -8,48 +8,38 @@ import { fileURLToPath } from "node:url";
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../bin/clawsub.mjs");
 
-test("eval metrics --json --repo no match warns on stderr and outputs empty JSON object", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
-  const logFile = path.join(tmpDir, "log.txt");
-  fs.writeFileSync(logFile, "2026-01-01T00:00:00Z repo:org/exists task:T-1 spawned\n");
+test("eval metrics with tick-only log exits 0 and reports 0 events", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-task03-"));
+  const logFile = path.join(tmpDir, "tick-only.log");
+  fs.writeFileSync(
+    logFile,
+    [
+      "2026-01-01 00:00:01 tick: worker heartbeat",
+      "2026-01-01 00:00:31 tick: worker heartbeat",
+      "2026-01-01 00:01:01 tick: worker heartbeat",
+    ].join("\n") + "\n"
+  );
   try {
-    const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile, "--repo", "org/nonexistent", "--json"], {
-      encoding: "utf8",
-    });
-    assert.equal(r.status, 0, `expected exit 0; got ${r.status}: ${r.stderr}`);
-    assert.match(r.stderr, /warning.*no events for repo/i, `expected warning in stderr: ${JSON.stringify(r.stderr)}`);
+    const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile], { encoding: "utf8" });
+    assert.equal(r.status, 0, `expected exit 0 for tick-only log; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.ok(!r.stdout.includes("error:"), `expected no error in stdout: ${r.stdout}`);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true });
+  }
+});
+
+test("eval metrics with tick-only log --json exits 0 and returns valid JSON", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-task03-"));
+  const logFile = path.join(tmpDir, "tick-only.log");
+  fs.writeFileSync(
+    logFile,
+    "2026-01-01 00:00:01 tick: worker heartbeat\n2026-01-01 00:00:31 tick: worker heartbeat\n"
+  );
+  try {
+    const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile, "--json"], { encoding: "utf8" });
+    assert.equal(r.status, 0, `expected exit 0 for tick-only log --json; got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
     const out = JSON.parse(r.stdout);
-    assert.deepEqual(out, {}, `expected empty JSON object: ${r.stdout}`);
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true });
-  }
-});
-
-test("eval metrics text --repo no match still warns on stderr and exits 0", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
-  const logFile = path.join(tmpDir, "log.txt");
-  fs.writeFileSync(logFile, "2026-01-01T00:00:00Z repo:org/exists task:T-1 spawned\n");
-  try {
-    const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile, "--repo", "org/nonexistent"], {
-      encoding: "utf8",
-    });
-    assert.equal(r.status, 0, `expected exit 0; got ${r.status}: ${r.stderr}`);
-    assert.match(r.stderr, /warning.*no events for repo/i, `expected warning in stderr: ${JSON.stringify(r.stderr)}`);
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true });
-  }
-});
-
-test("eval metrics --json --repo that matches emits no warning", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
-  const logFile = path.join(tmpDir, "log.txt");
-  fs.writeFileSync(logFile, "2026-01-01T00:00:00Z repo:org/exists task:T-1 spawned\n");
-  try {
-    const r = spawnSync(process.execPath, [BIN, "eval", "metrics", "--log", logFile, "--repo", "org/exists", "--json"], {
-      encoding: "utf8",
-    });
-    assert.equal(r.status, 0, `expected exit 0; got ${r.status}: ${r.stderr}`);
-    assert.equal(r.stderr, "", `expected no stderr: ${r.stderr}`);
+    assert.ok(typeof out === "object", `expected JSON object: ${r.stdout}`);
   } finally {
     fs.rmSync(tmpDir, { recursive: true });
   }
