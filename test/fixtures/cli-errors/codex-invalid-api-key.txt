@@ -1,0 +1,1 @@
+Error: Invalid API key provided. Check your OPENAI_API_KEY environment variable.

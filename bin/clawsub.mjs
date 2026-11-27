@@ -25,16 +25,18 @@ import {
   recordVersionSnapshot,
 } from "../src/versions.mjs";
 import { installSystemdService } from "../src/ubuntu-systemd.mjs";
+import { loopInit } from "../src/loop.mjs";
 
 function printHelp() {
   console.log(`🦞 clawsub (openclaw-sub v${CLAWSUB_VERSION})
 Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemini) with $0 API bills.
 
 Usage:
+  clawsub loop init [--workspace <path>] [--dry-run] [--force]
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
   clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
-  clawsub install-skill [--workspace <path>]
+  clawsub install-skill [--workspace <path>] [--global]
   clawsub version [--json]
   clawsub status [--json]
   clawsub baton [--session <key>] [--clear] [--json]
@@ -278,7 +280,7 @@ function cmdInstallSkill(flags) {
   const stateDir = getDefaultStateDir();
   const config = loadConfig(stateDir);
   const workspace = flags.workspace || config.workspace || process.cwd();
-  const res = installSkill({ workspace });
+  const res = installSkill({ workspace, global: Boolean(flags.global) });
   console.log("🦞 Installed clawsub SKILL.md:");
   for (const p of res.installedPaths) {
     console.log(`  ✓ ${p}`);
@@ -483,6 +485,42 @@ function cmdSavings(flags) {
   }
 }
 
+function cmdLoopInit(flags) {
+  const stateDir = getDefaultStateDir();
+  const config = loadConfig(stateDir);
+  const workspace = flags.workspace || config.workspace || process.cwd();
+  const dryRun = Boolean(flags["dry-run"]);
+
+  const force = Boolean(flags.force);
+  const result = loopInit({ workspace, dryRun, force });
+
+  if (dryRun) {
+    console.log("🦞 clawsub loop init (dry-run)\n");
+    console.log(`Destination: ${result.destDir}\n`);
+    console.log("Files to copy:");
+    for (const p of result.copied) {
+      console.log(`  ${p}`);
+    }
+  } else {
+    console.log("🦞 clawsub loop init\n");
+    console.log(`Copied loop-pack to: ${result.destDir}\n`);
+    for (const p of result.copied) {
+      console.log(`  ✓ ${p}`);
+    }
+    if (result.skipped.length > 0) {
+      console.log("\nSkipped (already exist — use --force to overwrite):");
+      for (const p of result.skipped) {
+        console.log(`  ⊘ ${p}`);
+      }
+    }
+  }
+
+  console.log("\nSuggested crontab entries (run `crontab -e` to add):");
+  for (const line of result.cronLines) {
+    console.log(`  ${line}`);
+  }
+}
+
 function cmdBaton(flags) {
   const stateDir = getDefaultStateDir();
   const store = loadBatonStore(stateDir);
@@ -540,6 +578,17 @@ function main() {
 
   if (subcmd === "version") {
     cmdVersion(flags);
+    return;
+  }
+
+  if (subcmd === "loop") {
+    const loopSubcmd = positional[1];
+    if (loopSubcmd === "init") {
+      cmdLoopInit(flags);
+    } else {
+      console.error(`Unknown loop subcommand: ${loopSubcmd || "(none)"}. Use: clawsub loop init`);
+      process.exit(1);
+    }
     return;
   }
 

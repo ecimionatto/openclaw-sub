@@ -17,6 +17,11 @@
     "skills/",
     "scripts/",
     "docs/",
+    "loop-pack/",
+    ".well-known/",
+    "llms.txt",
+    "llms-full.txt",
+    "SKILL.md",
     "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
@@ -24,6 +29,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "test:e2e": "bash test/e2e/run.sh",
     "status": "node ./bin/clawsub.mjs status",
     "doctor": "node ./bin/clawsub.mjs doctor",
     "version-check": "node ./bin/clawsub.mjs version"
@@ -31,6 +37,7 @@
   "keywords": [
     "openclaw",
     "openclaw-skill",
+    "agent-skills",
     "ubuntu",
     "claude-code",
     "codex",

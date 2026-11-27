@@ -195,6 +195,13 @@ export function runDoctor(opts = {}) {
     }
   }
 
+  for (const [pid, pst] of Object.entries(state.providers || {})) {
+    if (pst.status === "auth_expired") {
+      issues.push(`${pid}: auth_expired — credentials invalid or expired.`);
+      recommendations.push(`openclaw models auth login --provider ${pid} --force`);
+    }
+  }
+
   let openclawJson = null;
   try {
     const parsedOcJson = readOpenClawJson(opts.homeDir);

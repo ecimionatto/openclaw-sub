@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stub: simulates Antigravity/Gemini CLI answering successfully
+echo "stub-agy-response: ok"
+exit 0
