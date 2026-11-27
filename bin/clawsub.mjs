@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import path from "node:path";
 import {
   getSessionBaton,
   loadBatonStore,
@@ -162,14 +163,15 @@ function cmdInit(flags) {
     stateDir
   );
 
-  const initState = loadState(stateDir);
-  for (const id of Object.keys(initState.providers || {})) {
-    const p = initState.providers[id];
-    if (p.status === "cooldown" || p.status === "auth_expired") {
-      initState.providers[id] = { ...p, status: "healthy", cooldownUntil: null, resetAt: null };
-    }
+  const unknownProviders = requestedChain.filter((id) => !PROVIDERS[id]);
+  if (unknownProviders.length > 0) {
+    console.warn(`  ⚠ Unknown provider(s): ${unknownProviders.join(", ")} — will be skipped during routing`);
   }
-  saveState(initState, stateDir);
+
+  const openclawJsonPath = path.join(stateDir, "openclaw.json");
+  if (fs.existsSync(openclawJsonPath)) {
+    fs.copyFileSync(openclawJsonPath, `${openclawJsonPath}.bak.${Date.now()}`);
+  }
 
   const integration = generateOpenClawIntegration({
     stateDir,

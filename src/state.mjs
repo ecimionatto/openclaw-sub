@@ -37,11 +37,15 @@ export function loadConfig(stateDir = getDefaultStateDir()) {
 export function saveConfig(config, stateDir = getDefaultStateDir()) {
   fs.mkdirSync(stateDir, { recursive: true });
   const configPath = getConfigPath(stateDir);
-  if (fs.existsSync(configPath)) {
-    fs.copyFileSync(configPath, `${configPath}.bak.${Date.now()}`);
-  }
   const merged = { ...DEFAULT_CONFIG, ...config };
-  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  const newContent = JSON.stringify(merged, null, 2) + "\n";
+  if (fs.existsSync(configPath)) {
+    const existing = fs.readFileSync(configPath, "utf8");
+    if (existing !== newContent) {
+      fs.copyFileSync(configPath, `${configPath}.bak.${Date.now()}`);
+    }
+  }
+  fs.writeFileSync(configPath, newContent, "utf8");
   return merged;
 }
 

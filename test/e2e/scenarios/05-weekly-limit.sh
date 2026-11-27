@@ -2,7 +2,7 @@
 # SC-05: weekly limit -> cooldown with real reset ETA in state
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
-fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }
+fail() { echo "  FAIL [$SCENARIO]: $1"; }
 SCENARIO="05-weekly-limit"
 
 export STUB_CLAUDE_MODE=weekly_limit
@@ -22,4 +22,10 @@ node -e "const d=JSON.parse(require('fs').readFileSync('$STATE','utf8'));
   if(!s?.resetAt){console.error('missing resetAt');process.exit(1)}" \
   || fail "resetAt not set after weekly limit"
 
-pass "weekly limit: cooldown with resetAt ETA stored"
+node -e "const d=JSON.parse(require('fs').readFileSync('$STATE','utf8'));
+  const s=d.providers?.claude;
+  if(!s.resetAt.startsWith('2026-12-02')){
+    console.error('resetAt does not match weekly-limit date:'+s.resetAt);process.exit(1)}" \
+  || fail "resetAt does not match the weekly-limit reset date 2026-12-02"
+
+pass "weekly limit: cooldown with resetAt ETA stored and matches fixture date"

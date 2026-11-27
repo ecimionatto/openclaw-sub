@@ -13,8 +13,10 @@ echo '{"oauthAccount":{}}' > "$HOME/.claude.json"
 echo '{"token":"stub"}' > "$HOME/.codex/auth.json"
 echo '{}' > "$HOME/.gemini/antigravity-cli/settings.json"
 
+set +e
 OUT=$("$CLAWSUB" doctor 2>&1)
 EXIT=$?
+set -e
 [ "$EXIT" -eq 0 ] || fail "doctor exited $EXIT on healthy setup: $OUT"
 echo "$OUT" | grep -qiE "(ok|healthy|installed|detected)" \
   || fail "doctor healthy output unexpected: $OUT"
@@ -22,8 +24,12 @@ echo "$OUT" | grep -qiE "(ok|healthy|installed|detected)" \
 pass "doctor: exits 0 on healthy setup"
 
 rm -f "$HOME/.claude.json"
+set +e
 OUT2=$("$CLAWSUB" doctor 2>&1)
-echo "$OUT2" | grep -qiE "(not logged|missing|warning|error|not found|auth)" \
+EXIT2=$?
+set -e
+[ "$EXIT2" -ne 0 ] || fail "doctor should exit non-zero on broken setup"
+echo "$OUT2" | grep -qiE "(not logged|missing|warning|not found|not installed)" \
   || fail "doctor broken output lacks warning: $OUT2"
 
-pass "doctor: surfaces auth warning on broken setup"
+pass "doctor: exits non-zero and surfaces diagnostic on broken setup"

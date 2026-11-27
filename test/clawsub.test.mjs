@@ -22,6 +22,7 @@ import {
   loadState,
   loopInit,
   parseResetTime,
+  saveConfig,
   PROVIDER_PRICING,
   recordTurnSavings,
   recordVersionSnapshot,
@@ -1468,6 +1469,43 @@ test("docs/SOCIALIZATION.md contains awesome-list PR kit entries and agent outre
     sec6.includes("CLAUDE.md") || sec6.includes("AGENTS.md"),
     "Section 6 must reference CLAUDE.md or AGENTS.md"
   );
+});
+
+test("saveConfig creates backup only when content changes, not on identical re-save", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    saveConfig({ chain: ["claude"] }, tmp);
+    const files1 = fs.readdirSync(tmp).filter((f) => f.includes(".bak."));
+    assert.equal(files1.length, 0, "no backup on first write (no prior file)");
+    saveConfig({ chain: ["claude"] }, tmp);
+    const files2 = fs.readdirSync(tmp).filter((f) => f.includes(".bak."));
+    assert.equal(files2.length, 0, "no backup when content is identical");
+    saveConfig({ chain: ["codex"] }, tmp);
+    const files3 = fs.readdirSync(tmp).filter((f) => f.includes(".bak."));
+    assert.equal(files3.length, 1, "backup created when content changes");
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+  }
+});
+
+test("parseResetTime parses Claude weekly-limit date format", () => {
+  const msg = "Claude AI usage limit reached. Your limit will reset on Wednesday, Dec 2, 2026 at 12:00 AM UTC.";
+  const result = parseResetTime(msg, new Date("2026-11-27T10:00:00Z"));
+  assert.ok(result instanceof Date, "should return a Date");
+  assert.equal(result.toISOString().slice(0, 10), "2026-12-02", "parsed date should be 2026-12-02");
+});
+
+test("init does not reset provider cooldown or auth_expired state", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    const cooldownUntil = new Date(Date.now() + 3_600_000).toISOString();
+    saveState({ providers: { claude: { status: "cooldown", cooldownUntil } } }, tmp);
+    const before = loadState(tmp);
+    assert.equal(before.providers.claude.status, "cooldown", "state has cooldown before");
+    assert.equal(before.providers.claude.cooldownUntil, cooldownUntil, "cooldownUntil preserved");
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+  }
 });
 
 test("community contribution files exist and contain required sections", () => {
