@@ -1030,6 +1030,19 @@ test("saveState/loadState round-trip preserves savings and handles legacy state 
   assert.equal(legacy.savings.firstRecordedAt, null);
 });
 
+test("saveState/loadState: new provider cooldown survives round-trip (generic providers object)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-newprovider-"));
+  const cooldownUntil = new Date(Date.now() + 3_600_000).toISOString();
+  const state = {
+    providers: { myNewCLI: { status: "cooldown", cooldownUntil } },
+    savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null },
+  };
+  saveState(state, tmpDir);
+  const loaded = loadState(tmpDir);
+  assert.equal(loaded.providers.myNewCLI.cooldownUntil, cooldownUntil, "cooldown must survive reload");
+  assert.equal(loaded.providers.myNewCLI.status, "cooldown");
+});
+
 test("cmdSavings CLI command outputs savings for both empty and populated state dirs", () => {
   const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
 

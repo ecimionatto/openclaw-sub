@@ -72,7 +72,7 @@ Run `node --test test/*.test.mjs` — the test must **fail** at this point (red-
 
 #### 3. Add the adapter to `src/providers.mjs`
 
-Add your provider inside the `PROVIDERS` object. Copy the shape from an existing provider (e.g. `agy`) and fill in every field:
+Add your provider inside the `PROVIDERS` object. Copy the shape from an existing provider (e.g. `agy`) and fill in the required fields. Some adapters also define `altBinary` when the CLI can be invoked under a second binary name (e.g. `agy` ships `altBinary: "gemini"`) — include it if your CLI has an alias:
 
 ```js
 myNewCLI: {
@@ -126,7 +126,32 @@ myNewCLI: {
 
 #### 4. Add the provider to the default chain (optional)
 
-If the new provider should appear in the default failover chain, add its `id` to the inline `chain` defaults in `src/openclaw-config.mjs` and `src/router.mjs` (search for `["claude", "codex", "agy"]`). Open an issue first if you are unsure — changing the default chain affects all users.
+If the new provider should appear in the default failover chain, you must update **all three** places that define the default:
+
+1. `src/state.mjs` — `DEFAULT_CONFIG.chain` array (the authoritative default; `loadConfig` merges from this).
+2. `src/openclaw-config.mjs` — the `chain` fallback in `generateOpenClawIntegration` (`config.chain || ["claude", "codex", "agy"]`).
+3. `src/router.mjs` — the `chain` fallback in `routePrompt` (`config.chain || ["claude", "codex", "agy"]`).
+
+> **Note:** An existing `~/.openclaw/clawsub.json` or `state.json` stores the user's saved chain. Those files take precedence over code defaults, so users who have already configured their chain will not automatically pick up the new provider. Document this in your PR.
+
+Open an issue first if you are unsure — changing the default chain affects all users.
+
+#### 4.5. Verify cooldown persistence
+
+`loadState` in `src/state.mjs` stores provider state as a plain JSON object keyed by provider ID — no hardcoded list of known providers. This means your new provider's quota cooldown is automatically preserved across save/reload cycles without any changes to `src/state.mjs`.
+
+Add a test confirming this:
+
+```js
+test("providers: myNewCLI cooldown survives saveState/loadState round-trip", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-myNewCLI-"));
+  const cooldownUntil = new Date(Date.now() + 3_600_000).toISOString();
+  const state = { providers: { myNewCLI: { status: "cooldown", cooldownUntil } }, savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null } };
+  saveState(state, tmpDir);
+  const loaded = loadState(tmpDir);
+  assert.equal(loaded.providers.myNewCLI.cooldownUntil, cooldownUntil);
+});
+```
 
 #### 5. Document the quota / reset signals
 
@@ -136,7 +161,7 @@ Subscription CLIs emit different error messages when the quota is exhausted. Add
 { file: "mynewcli-quota-exceeded.txt", isQuota: true, isAuth: false, parsed: null },
 ```
 
-If the error includes a parseable reset time, set `parsed` to an object with the expected time fields (`hours`, `minutes`, `day`, etc.).
+If the error includes a parseable reset time, set `parsed` to an object with the expected time fields (`hours`, `minutes`, `month`, `date`, `year`). The `date` field is the day-of-month (1–31), not a weekday.
 
 #### 6. Verify everything
 
@@ -163,7 +188,7 @@ Use the **New Provider** issue template (`.github/ISSUE_TEMPLATE/new_provider.md
 
 ## Filing Bugs
 
-Use `.github/ISSUE_TEMPLATE/bug_report.md`. Include your OS, Node.js version, `clawsub` version (`node ./bin/clawsub.mjs --version`), and the full error output.
+Use `.github/ISSUE_TEMPLATE/bug_report.md`. Include your OS, Node.js version, `clawsub` version (`node ./bin/clawsub.mjs version`), and the full error output.
 
 ## Code of Conduct
 

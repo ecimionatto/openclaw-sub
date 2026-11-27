@@ -10,7 +10,7 @@ assignees: ""
 
 - **OS:** <!-- e.g. Ubuntu 24.04, macOS 15.1 -->
 - **Node.js version:** <!-- node --version -->
-- **clawsub version:** <!-- node ./bin/clawsub.mjs --version -->
+- **clawsub version:** <!-- node ./bin/clawsub.mjs version -->
 - **Active provider chain:** <!-- e.g. claude,codex,agy -->
 
 ## What happened
