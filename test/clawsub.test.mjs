@@ -31,6 +31,7 @@ import {
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
+import pluginEntry, { buildAgyCliBackend, parseAgyJsonlEvent, parseGeminiJsonlEvent, parseJSONL, resolveAgyCommand } from "../src/plugin.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -1485,4 +1486,203 @@ test("community contribution files exist and contain required sections", () => {
   assert.ok(newProvider.includes("name: New provider adapter"), "new_provider.md must have frontmatter name");
   assert.ok(newProvider.includes("buildCommand"), "new_provider.md must reference buildCommand checklist");
   assert.ok(newProvider.includes("src/providers.mjs"), "new_provider.md must reference src/providers.mjs");
+});
+
+test("root openclaw.plugin.json and package.json openclaw.extensions are valid and version-synced", () => {
+  const root = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+  const manifestPath = path.join(root, "openclaw.plugin.json");
+  assert.equal(fs.existsSync(manifestPath), true);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+
+  assert.equal(manifest.id, "openclaw-sub");
+  assert.equal(manifest.version, pkg.version);
+  assert.deepEqual(manifest.cliBackends, ["agy-cli"]);
+  assert.equal(manifest.configSchema?.type, "object");
+  assert.deepEqual(pkg.openclaw?.extensions, ["./src/plugin.mjs"]);
+  assert.ok(pkg.files.includes("openclaw.plugin.json"));
+});
+
+test("pluginEntry.register calls api.registerCliBackend with declarative CliBackendConfig and resolves alt binary", () => {
+  const registered = [];
+  const fakeApi = {
+    registerCliBackend(backend) {
+      registered.push(backend);
+    },
+  };
+
+  pluginEntry.register(fakeApi, {
+    findBinary: (bin) => (bin === "agy" ? { installed: true, path: "/usr/local/bin/agy" } : { installed: false }),
+  });
+
+  assert.equal(registered.length, 1);
+  const backend = registered[0];
+  assert.equal(backend.id, "agy-cli");
+  assert.equal(backend.modelProvider, "agy-cli");
+  assert.equal(typeof backend.parseJsonlEvent, "function");
+  assert.equal(backend.config.command, "/usr/local/bin/agy");
+  assert.equal(backend.config.output, "jsonl");
+  assert.equal(backend.config.input, "arg");
+  assert.equal(backend.config.promptArg, "--prompt");
+  assert.equal(backend.config.modelArg, "--model");
+  assert.ok(backend.config.args.includes("--output-format"));
+  assert.ok(backend.config.args.includes("stream-json"));
+  assert.ok(backend.config.resumeArgs.includes("{sessionId}"));
+  assert.ok(!backend.config.args.includes("--dangerously-skip-permissions"), "dangerous flag must not be present by default");
+  assert.ok(backend.config.args.includes("--disable-slash-commands"), "agy backend must include --disable-slash-commands");
+
+  // When gemini is the only installed binary, it gets gemini-specific config (different flags, no resume)
+  const geminiRegistered = [];
+  const geminiApi = { registerCliBackend(b) { geminiRegistered.push(b); } };
+  pluginEntry.register(geminiApi, {
+    findBinary: (bin) => (bin === "gemini" ? { installed: true, path: "/opt/bin/gemini" } : { installed: false }),
+  });
+  const geminiBackend = geminiRegistered[0];
+  assert.equal(geminiBackend.config.command, "/opt/bin/gemini");
+  assert.ok(!geminiBackend.config.args.includes("--disable-slash-commands"), "gemini must not use --disable-slash-commands");
+  assert.equal(geminiBackend.config.resumeArgs, undefined, "gemini has no resume support");
+  assert.equal(geminiBackend.config.promptArg, "--prompt");
+
+  // resolveAgyCommand returns { command, binary } — fallback to altBinary
+  const altResult = resolveAgyCommand((bin) =>
+    bin === "gemini" ? { installed: true, path: "/opt/bin/gemini" } : { installed: false }
+  );
+  assert.equal(altResult.command, "/opt/bin/gemini");
+  assert.equal(altResult.binary, "gemini");
+});
+
+test("parseAgyJsonlEvent and parseJSONL parse init, step_update, result, and malformed lines", () => {
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "init", conversation_id: "conv-123" })),
+    { kind: "sessionId", sessionId: "conv-123" }
+  );
+  assert.deepEqual(
+    parseAgyJsonlEvent(
+      JSON.stringify({
+        event: "step_update",
+        step_update: { step_type: "agent_response", text_delta: "Hello" },
+      })
+    ),
+    [{ kind: "text", text: "Hello" }]
+  );
+  assert.deepEqual(
+    parseAgyJsonlEvent(
+      JSON.stringify({
+        event: "result",
+        result: { status: "SUCCESS", response: "Done", conversation_id: "conv-123", usage: { input_tokens: 10, output_tokens: 5 } },
+      })
+    ),
+    {
+      kind: "result",
+      text: "Done",
+      sessionId: "conv-123",
+      usage: { input: 10, output: 5 },
+    }
+  );
+  assert.equal(parseAgyJsonlEvent("not-json"), null);
+
+  // failure path: non-SUCCESS status
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "result", result: { status: "FAILURE" } })),
+    { kind: "result", text: "", errorText: "Antigravity CLI ended with status FAILURE." }
+  );
+  // failure path: explicit error field takes priority over status message
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "result", result: { error: "rate limit exceeded", status: "ERROR" } })),
+    { kind: "result", text: "", errorText: "rate limit exceeded" }
+  );
+  // failure path: error with no status still produces errorText
+  assert.deepEqual(
+    parseAgyJsonlEvent(JSON.stringify({ event: "result", result: { error: "timeout" } })),
+    { kind: "result", text: "", errorText: "timeout" }
+  );
+
+  const lines = parseJSONL(`{"a":1}\nmalformed\n{"b":2}`);
+  assert.equal(lines.length, 3);
+  assert.deepEqual(lines[0], { a: 1 });
+  assert.deepEqual(lines[1], { raw: "malformed" });
+  assert.deepEqual(lines[2], { b: 2 });
+});
+
+test("parseGeminiJsonlEvent handles init, assistant messages, result with stats, error result, and malformed lines", () => {
+  // init event emits sessionId
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "init", session_id: "sess-abc" })),
+    { kind: "sessionId", sessionId: "sess-abc" }
+  );
+  // init without session_id emits empty array
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "init" })),
+    []
+  );
+  // assistant message emits text
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "assistant", content: "Hello world", delta: true })),
+    [{ kind: "text", text: "Hello world" }]
+  );
+  // user message is ignored
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "user", content: "ping" })),
+    []
+  );
+  // successful result with stats passes usage and response
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({
+      type: "result",
+      status: "success",
+      response: "Done",
+      stats: { input_tokens: 10, output_tokens: 5 },
+    })),
+    { kind: "result", text: "Done", usage: { input: 10, output: 5 } }
+  );
+  // error result with structured error object (quota-limited run)
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({
+      type: "result",
+      status: "error",
+      error: { type: "QUOTA_EXCEEDED", message: "quota exceeded" },
+    })),
+    { kind: "result", text: "", errorText: "quota exceeded" }
+  );
+  // error result with no message falls back to status description
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "error" })),
+    { kind: "result", text: "", errorText: "Gemini CLI ended with status error" }
+  );
+  // standalone type:"error" events are non-terminal — final outcome is in the result event
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "error", severity: "warning", message: "rate limit warning" })),
+    []
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "error", severity: "error", message: "transient error" })),
+    []
+  );
+  // warning → assistant text → successful result: warning must not cut off the run
+  assert.deepEqual(parseGeminiJsonlEvent(JSON.stringify({ type: "error", severity: "warning", message: "warn" })), []);
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "assistant", content: "Here is my answer" })),
+    [{ kind: "text", text: "Here is my answer" }]
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "success" })),
+    { kind: "result", text: "" }
+  );
+  // init → message → result without response field: text is "" (host preserves accumulated deltas)
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "init", session_id: "s1" })),
+    { kind: "sessionId", sessionId: "s1" }
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "assistant", content: "delta" })),
+    [{ kind: "text", text: "delta" }]
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "success" })),
+    { kind: "result", text: "" }
+  );
+  // malformed line returns null
+  assert.equal(parseGeminiJsonlEvent("not-json"), null);
+  // missing type field returns null
+  assert.equal(parseGeminiJsonlEvent(JSON.stringify({ foo: "bar" })), null);
 });
