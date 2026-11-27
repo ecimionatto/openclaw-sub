@@ -16,6 +16,7 @@ import {
   getProviderCooldown,
   installOpenClawUbuntu,
   installSkill,
+  isAuthError,
   isHeartbeatPrompt,
   isQuotaError,
   loadState,
@@ -82,6 +83,151 @@ test("computeCooldownUntil adds safety buffer to parsed reset time or falls back
     defaultMinutes: 60,
   });
   assert.equal(fallback.getTime() - now.getTime(), 60 * 60_000);
+});
+
+test("isQuotaError table: session/model/weekly limits, curly apostrophe, Request rejected (429)", () => {
+  const hits = [
+    "You’ve hit your session limit.",
+    "You've hit your session limit.",
+    "You’ve hit your weekly limit. Resets Mon 12:00am.",
+    "You’ve hit your usage limit. Try again at Nov 28th, 2026 3:45 PM.",
+    "You've hit your Opus limit for this week.",
+    "You've hit your Sonnet limit. Resets in 2 hours.",
+    "Request rejected (429): too many requests",
+  ];
+  for (const msg of hits) {
+    assert.equal(isQuotaError(msg), true, `should match: ${msg}`);
+  }
+  assert.equal(isQuotaError("Everything is working fine."), false);
+});
+
+test("parseResetTime: weekday reset 'resets Mon 12:00am'", () => {
+  // now = Wednesday Nov 25 2026 16:00 — next Monday is Nov 30
+  const now = new Date(2026, 10, 25, 16, 0);
+  const result = parseResetTime("You’ve hit your weekly limit. Resets Mon 12:00am.", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getDay(), 1, "should be a Monday");
+  assert.equal(result.getHours(), 0);
+  assert.equal(result.getMinutes(), 0);
+  assert.ok(result > now, "reset must be in the future");
+});
+
+test("parseResetTime: Codex 'Try again at 3:45 PM'", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const result = parseResetTime("You’ve hit your usage limit. Try again at 3:45 PM.", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+  assert.ok(result > now);
+});
+
+test("parseResetTime: Codex absolute 'Try again at Nov 28th, 2026 3:45 PM'", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const result = parseResetTime("Try again at Nov 28th, 2026 3:45 PM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getMonth(), 10);
+  assert.equal(result.getDate(), 28);
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+});
+
+test("isAuthError table: Not logged in, OAuth, Invalid API key, RefreshTokenFailed", () => {
+  const hits = [
+    "Error: Not logged in. Please run `claude login`.",
+    "OAuth token refresh failed: token expired",
+    "Error: Invalid API key provided.",
+    "RefreshTokenFailed: unable to refresh OAuth credentials",
+  ];
+  for (const msg of hits) {
+    assert.equal(isAuthError(msg), true, `should match: ${msg}`);
+  }
+  assert.equal(isAuthError("Normal response OK"), false);
+  assert.equal(isAuthError("You've hit your 5-hour limit"), false);
+});
+
+test("routePrompt sets auth_expired status with 6h cooldown and remediation on auth failure", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts[0].status, "auth_expired");
+  assert.ok(result.attempts[0].remediation.includes("openclaw models auth login"));
+  assert.ok(result.attempts[0].remediation.includes("--provider claude"));
+  assert.ok(result.attempts[0].remediation.includes("--force"));
+  const cooldownUntil = new Date(state.providers.claude.cooldownUntil);
+  assert.ok(cooldownUntil.getTime() - now.getTime() >= 6 * 3600_000 - 1000);
+  assert.ok(cooldownUntil.getTime() - now.getTime() <= 6 * 3600_000 + 1000);
+});
+
+test("routePrompt all-auth chain: output names auth cause, not quota cooldown", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes("expired credentials"), `expected 'expired credentials' in: ${result.output}`);
+  assert.ok(!result.output.includes("quota cooldown"), `should not mention quota cooldown in: ${result.output}`);
+  assert.ok(result.output.includes("claude: auth expired"), `expected per-provider label in: ${result.output}`);
+  assert.ok(result.output.includes("codex: auth expired"), `expected per-provider label in: ${result.output}`);
+  assert.ok(result.output.includes("openclaw models auth login"), `expected remediation cmd in: ${result.output}`);
+});
+
+test("routePrompt mixed auth/quota chain: quota reset shown, auth listed separately", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  let call = 0;
+  const runner = () => {
+    call++;
+    if (call === 1) {
+      return {
+        stdout: '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
+        stderr: "",
+        exitCode: 1,
+        latencyMs: 10,
+      };
+    }
+    return {
+      stdout: "",
+      stderr: "OAuth token refresh failed: token expired",
+      exitCode: 1,
+      latencyMs: 10,
+    };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes("quota cooldown"), `expected quota cooldown in: ${result.output}`);
+  assert.ok(result.output.includes("Auth expired"), `expected auth section in: ${result.output}`);
+  assert.ok(result.output.includes("codex: auth expired"), `expected per-provider auth label in: ${result.output}`);
+  assert.ok(!result.output.includes("quota cooldown") || result.output.includes("claude"), `quota reset should reference claude`);
 });
 
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
@@ -1109,8 +1255,141 @@ test("CLI loop init --force passes force to loopInit and overwrites files", () =
   fs.writeFileSync(backlogPath, "edited");
 
   spawnSync(process.execPath, ["./bin/clawsub.mjs", "loop", "init", "--workspace", tmpDir, "--force"], {
-    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."),
+    cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
   });
 
   assert.notEqual(fs.readFileSync(backlogPath, "utf8"), "edited", "--force must overwrite edited file via CLI");
+});
+
+test("fixture-driven: each cli-error fixture classifies and parses correctly", () => {
+  const fixtureDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/cli-errors");
+  const nowRef = new Date(2026, 10, 25, 10, 0); // Nov 25 2026 10:00 AM
+
+  const table = [
+    { file: "claude-not-logged-in.txt",       isQuota: false, isAuth: true,  parsed: null },
+    { file: "claude-oauth-refresh-failed.txt", isQuota: false, isAuth: true,  parsed: null },
+    { file: "claude-request-rejected-429.txt", isQuota: true,  isAuth: false, parsed: null },
+    { file: "claude-session-limit.txt",        isQuota: true,  isAuth: false, parsed: null },
+    { file: "claude-weekly-limit.txt",         isQuota: true,  isAuth: false,
+      parsed: { day: 1, hours: 0, minutes: 0 } },
+    { file: "codex-invalid-api-key.txt",       isQuota: false, isAuth: true,  parsed: null },
+    { file: "codex-refresh-token-failed.txt",  isQuota: false, isAuth: true,  parsed: null },
+    { file: "codex-try-again-at.txt",          isQuota: true,  isAuth: false,
+      parsed: { hours: 15, minutes: 45 } },
+    { file: "codex-usage-limit.txt",           isQuota: true,  isAuth: false,
+      parsed: { month: 10, date: 28, hours: 15, minutes: 45 } },
+  ];
+
+  for (const { file, isQuota, isAuth, parsed } of table) {
+    const text = fs.readFileSync(path.join(fixtureDir, file), "utf8");
+    assert.equal(isQuotaError(text), isQuota, `${file}: isQuota should be ${isQuota}`);
+    assert.equal(isAuthError(text), isAuth, `${file}: isAuth should be ${isAuth}`);
+    if (parsed) {
+      const result = parseResetTime(text, nowRef);
+      assert.ok(result, `${file}: parseResetTime should return a date`);
+      assert.ok(result > nowRef, `${file}: parsed time must be in the future`);
+      if (parsed.day !== undefined) assert.equal(result.getDay(), parsed.day, `${file}: wrong weekday`);
+      if (parsed.month !== undefined) assert.equal(result.getMonth(), parsed.month, `${file}: wrong month`);
+      if (parsed.date !== undefined) assert.equal(result.getDate(), parsed.date, `${file}: wrong date`);
+      if (parsed.hours !== undefined) assert.equal(result.getHours(), parsed.hours, `${file}: wrong hours`);
+      if (parsed.minutes !== undefined) assert.equal(result.getMinutes(), parsed.minutes, `${file}: wrong minutes`);
+    }
+  }
+});
+
+test("parseResetTime: Codex cross-midnight 'Try again at 1:00 AM' at 23:00 rolls to next day", () => {
+  const now = new Date(2026, 10, 25, 23, 0); // Nov 25 2026 11pm
+  const result = parseResetTime("Try again at 1:00 AM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getHours(), 1);
+  assert.equal(result.getMinutes(), 0);
+  assert.equal(result.getDate(), 26, "should be Nov 26");
+  assert.ok(result > now, "result must be in the future");
+});
+
+test("parseResetTime: Codex year-boundary 'Try again at Jan 2nd, 2027 3:45 PM' parsed in December 2026", () => {
+  const now = new Date(2026, 11, 20, 10, 0); // Dec 20 2026
+  const result = parseResetTime("Try again at Jan 2nd, 2027 3:45 PM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getFullYear(), 2027);
+  assert.equal(result.getMonth(), 0);
+  assert.equal(result.getDate(), 2);
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+  assert.ok(result > now, "result must be in the future");
+});
+
+test("routePrompt does not trigger auth_expired when exitCode=0 and stdout contains auth text", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = { chain: ["claude"], workspace: "/tmp", quietWindows: [], quotaReservationWindows: [] };
+  const runner = () => ({
+    stdout: "To answer your question: auth_expired tokens cause invalid API key errors. Not logged in is a common mistake.",
+    stderr: "",
+    exitCode: 0,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, true, "should succeed despite auth text in successful stdout");
+  assert.equal(result.attempts[0].status, "ok");
+  assert.equal(state.providers.claude?.status, "healthy");
+});
+
+test("runDoctor reports auth_expired providers with remediation command from state", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-auth-"));
+  const expiredState = {
+    providers: {
+      claude: {
+        status: "auth_expired",
+        cooldownUntil: new Date(Date.now() + 6 * 3600_000).toISOString(),
+        remediation: "openclaw models auth login --provider claude --force",
+      },
+    },
+    savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null },
+  };
+  fs.writeFileSync(path.join(tmpDir, "clawsub-state.json"), JSON.stringify(expiredState));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.issues.some((i) => /claude/.test(i) && /auth_expired/.test(i)),
+    "Expected auth_expired issue for claude"
+  );
+  assert.ok(
+    report.recommendations.some((r) => r === "openclaw models auth login --provider claude --force"),
+    "Expected exact auth login command for claude"
+  );
+});
+
+test("routePrompt preserves auth_expired status and remediation on second-turn cooldown skip", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = { chain: ["claude"], workspace: "/tmp", quietWindows: [], quotaReservationWindows: [] };
+  const authRunner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  // Turn 1: claude fails with auth error
+  routePrompt("hello", { now, state, config, runner: authRunner });
+  assert.equal(state.providers.claude?.status, "auth_expired");
+
+  // Turn 2 (1 min later): claude still in 6h cooldown
+  const turn2 = routePrompt("world", {
+    now: new Date(now.getTime() + 60_000),
+    state,
+    config,
+    runner: authRunner,
+  });
+  assert.equal(turn2.ok, false, "single-provider chain, still cooling");
+  const skipped = turn2.attempts[0];
+  assert.equal(skipped.status, "auth_expired", "skipped attempt must carry auth_expired status");
+  assert.ok(
+    skipped.remediation?.includes("openclaw models auth login"),
+    "skipped attempt must include remediation"
+  );
+  assert.ok(
+    turn2.output.includes("openclaw models auth login --provider claude --force"),
+    "human-readable output must reference remediation"
+  );
 });
