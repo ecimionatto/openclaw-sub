@@ -154,6 +154,10 @@ function cmdInit(flags) {
   }
 
   console.log("\n[3/5] Writing Subscription-Saver Config, Cooldown Shims & Version Snapshot...");
+  const clawsubJsonPath = path.join(stateDir, "clawsub.json");
+  if (fs.existsSync(clawsubJsonPath)) {
+    fs.copyFileSync(clawsubJsonPath, `${clawsubJsonPath}.bak.${Date.now()}`);
+  }
   const saved = saveConfig(
     {
       ...existing,

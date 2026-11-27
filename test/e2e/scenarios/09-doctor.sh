@@ -24,6 +24,7 @@ echo "$OUT" | grep -qiE "(ok|healthy|installed|detected)" \
 pass "doctor: exits 0 on healthy setup"
 
 rm -f "$HOME/.claude.json"
+rm -rf "$HOME/.claude"
 set +e
 OUT2=$("$CLAWSUB" doctor 2>&1)
 EXIT2=$?

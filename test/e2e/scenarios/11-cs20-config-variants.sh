@@ -26,6 +26,7 @@ echo "$OUT" | grep -qiE "(exhausted|limit|no provider)" \
 pass "single provider + failover off: clear error on exhaustion"
 
 export STUB_CLAUDE_MODE=ok
+"$CLAWSUB" reset 2>&1 || true
 "$CLAWSUB" init --chain nonexistent,claude 2>&1 || fail "init with missing provider failed"
 OUT2=$("$CLAWSUB" run "test" 2>&1) || fail "run failed when optional provider missing: $OUT2"
 echo "$OUT2" | grep -qF "stub-claude-response: ok" \
