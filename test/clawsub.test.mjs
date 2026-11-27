@@ -1417,3 +1417,20 @@ test("routePrompt preserves auth_expired status and remediation on second-turn c
     "human-readable output must reference remediation"
   );
 });
+
+test("community contribution files exist and contain required sections", () => {
+  const contributing = fs.readFileSync(fileURLToPath(new URL("../CONTRIBUTING.md", import.meta.url)), "utf8");
+  assert.ok(contributing.includes("buildCommand"), "CONTRIBUTING.md must document buildCommand");
+  assert.ok(contributing.includes("checkAuth"), "CONTRIBUTING.md must document checkAuth");
+  assert.ok(contributing.includes("checkHeadlessSafety"), "CONTRIBUTING.md must document checkHeadlessSafety");
+  assert.ok(contributing.includes("src/providers.mjs"), "CONTRIBUTING.md must reference src/providers.mjs");
+
+  const bugReport = fs.readFileSync(fileURLToPath(new URL("../.github/ISSUE_TEMPLATE/bug_report.md", import.meta.url)), "utf8");
+  assert.ok(bugReport.includes("name: Bug report"), "bug_report.md must have frontmatter name");
+  assert.ok(bugReport.includes("Steps to reproduce"), "bug_report.md must include reproduction steps");
+
+  const newProvider = fs.readFileSync(fileURLToPath(new URL("../.github/ISSUE_TEMPLATE/new_provider.md", import.meta.url)), "utf8");
+  assert.ok(newProvider.includes("name: New provider adapter"), "new_provider.md must have frontmatter name");
+  assert.ok(newProvider.includes("buildCommand"), "new_provider.md must reference buildCommand checklist");
+  assert.ok(newProvider.includes("src/providers.mjs"), "new_provider.md must reference src/providers.mjs");
+});
