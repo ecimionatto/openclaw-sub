@@ -96,16 +96,40 @@ export function parseGeminiJsonlEvent(line) {
   if (!parsed || typeof parsed !== "object") return null;
   if (typeof parsed.type !== "string") return null;
 
-  if (parsed.type === "content") {
+  if (parsed.type === "init") {
+    const sessionId = typeof parsed.session_id === "string" ? parsed.session_id.trim() : "";
+    return sessionId ? { kind: "sessionId", sessionId } : [];
+  }
+
+  if (parsed.type === "message") {
+    if (parsed.role !== "assistant") return [];
     const text = typeof parsed.content === "string" ? parsed.content : "";
     return text ? [{ kind: "text", text }] : [];
   }
+
+  if (parsed.type === "error") {
+    const msg = typeof parsed.message === "string" ? parsed.message.trim() : "Gemini CLI error";
+    return { kind: "result", text: "", errorText: msg };
+  }
+
   if (parsed.type === "done" || parsed.type === "result") {
-    const usage = normalizeAgyUsage(parsed.usage);
+    const status = typeof parsed.status === "string" ? parsed.status.toLowerCase() : "";
+    const isError = status === "error" || status === "failure";
+
+    let errorText;
+    if (isError) {
+      const errObj = parsed.error && typeof parsed.error === "object" ? parsed.error : null;
+      const errStr = errObj
+        ? (typeof errObj.message === "string" ? errObj.message.trim() : "")
+        : (typeof parsed.error === "string" ? parsed.error.trim() : "");
+      errorText = errStr || `Gemini CLI ended with status ${status}`;
+    }
+
+    const stats = parsed.stats && typeof parsed.stats === "object" ? parsed.stats : null;
+    const usage = normalizeAgyUsage(stats);
     const sessionId =
       (typeof parsed.session_id === "string" && parsed.session_id.trim()) || undefined;
-    const errorText =
-      (typeof parsed.error === "string" && parsed.error.trim()) || undefined;
+
     return {
       kind: "result",
       text: !errorText && typeof parsed.response === "string" ? parsed.response : "",

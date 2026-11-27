@@ -31,7 +31,7 @@ import {
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
-import pluginEntry, { buildAgyCliBackend, parseAgyJsonlEvent, parseJSONL, resolveAgyCommand } from "../src/plugin.mjs";
+import pluginEntry, { buildAgyCliBackend, parseAgyJsonlEvent, parseGeminiJsonlEvent, parseJSONL, resolveAgyCommand } from "../src/plugin.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
   assert.equal(isQuotaError('{"type":"result","error":"usage_limit_reached: resets 6:50pm"}'), true);
@@ -1602,4 +1602,60 @@ test("parseAgyJsonlEvent and parseJSONL parse init, step_update, result, and mal
   assert.deepEqual(lines[0], { a: 1 });
   assert.deepEqual(lines[1], { raw: "malformed" });
   assert.deepEqual(lines[2], { b: 2 });
+});
+
+test("parseGeminiJsonlEvent handles init, assistant messages, result with stats, error result, and malformed lines", () => {
+  // init event emits sessionId
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "init", session_id: "sess-abc" })),
+    { kind: "sessionId", sessionId: "sess-abc" }
+  );
+  // init without session_id emits empty array
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "init" })),
+    []
+  );
+  // assistant message emits text
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "assistant", content: "Hello world", delta: true })),
+    [{ kind: "text", text: "Hello world" }]
+  );
+  // user message is ignored
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "user", content: "ping" })),
+    []
+  );
+  // successful result with stats passes usage and response
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({
+      type: "result",
+      status: "success",
+      response: "Done",
+      stats: { input_tokens: 10, output_tokens: 5 },
+    })),
+    { kind: "result", text: "Done", usage: { input: 10, output: 5 } }
+  );
+  // error result with structured error object (quota-limited run)
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({
+      type: "result",
+      status: "error",
+      error: { type: "QUOTA_EXCEEDED", message: "quota exceeded" },
+    })),
+    { kind: "result", text: "", errorText: "quota exceeded" }
+  );
+  // error result with no message falls back to status description
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "error" })),
+    { kind: "result", text: "", errorText: "Gemini CLI ended with status error" }
+  );
+  // standalone type:"error" event
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "error", message: "fatal error" })),
+    { kind: "result", text: "", errorText: "fatal error" }
+  );
+  // malformed line returns null
+  assert.equal(parseGeminiJsonlEvent("not-json"), null);
+  // missing type field returns null
+  assert.equal(parseGeminiJsonlEvent(JSON.stringify({ foo: "bar" })), null);
 });
