@@ -89,11 +89,14 @@ export function routePrompt(prompt, opts = {}) {
     // 2. Fast-skip providers currently in active quota cooldown (0ms overhead)
     const cd = getProviderCooldown(state, providerId, now);
     if (cd.coolingDown) {
+      const pState = state.providers?.[providerId] || {};
+      const authExpired = pState.status === "auth_expired";
       attempts.push({
         provider: providerId,
-        status: "skipped_cooldown",
+        status: authExpired ? "auth_expired" : "skipped_cooldown",
         cooldownUntil: cd.until,
         remainingMinutes: cd.remainingMinutes,
+        ...(authExpired && pState.remediation && { remediation: pState.remediation }),
       });
       continue;
     }
@@ -122,7 +125,7 @@ export function routePrompt(prompt, opts = {}) {
     const combinedOutput = [result.stdout, result.stderr, result.error].filter(Boolean).join("\n");
 
     // 5a. Check for auth/credential failure -> 6h cooldown, remediation hint
-    if (isAuthError(combinedOutput)) {
+    if ((result.exitCode !== 0 || result.error) && isAuthError(combinedOutput)) {
       const until = new Date(now.getTime() + 6 * 3600_000);
       state.providers[providerId] = {
         ...(state.providers[providerId] || {}),
@@ -271,9 +274,14 @@ export function routePrompt(prompt, opts = {}) {
     .sort((a, b) => new Date(a.until).getTime() - new Date(b.until).getTime());
 
   const earliest = activeCooldowns[0];
+  const authExpiredEntries = chain
+    .filter((id) => state.providers?.[id]?.status === "auth_expired")
+    .map((id) => state.providers[id].remediation)
+    .filter(Boolean);
+  const authHint = authExpiredEntries.length > 0 ? " " + authExpiredEntries.join(" ") : "";
   const resetMsg = earliest
-    ? `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).`
-    : `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.`;
+    ? `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authHint}`
+    : `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authHint}`;
 
   return {
     ok: false,

@@ -85,12 +85,12 @@ export function parseResetTime(output, now = new Date()) {
 
   // 2a. Codex absolute date: "Try again at 3:45 PM" or "Try again at Nov 28th, 2026 3:45 PM"
   const codexAbsMatch = output.match(
-    /[Tt]ry again at\s+(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:\d{4}\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([AP]M)/i
+    /[Tt]ry again at\s+(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})?\s*)?(\d{1,2})(?::(\d{2}))?\s*([AP]M)/i
   );
   if (codexAbsMatch) {
-    let hour = Number.parseInt(codexAbsMatch[3], 10);
-    const minute = Number.parseInt(codexAbsMatch[4] || "0", 10);
-    const meridiem = codexAbsMatch[5].toUpperCase();
+    let hour = Number.parseInt(codexAbsMatch[4], 10);
+    const minute = Number.parseInt(codexAbsMatch[5] || "0", 10);
+    const meridiem = codexAbsMatch[6].toUpperCase();
     if (meridiem === "PM" && hour < 12) hour += 12;
     if (meridiem === "AM" && hour === 12) hour = 0;
     const candidate = new Date(now);
@@ -99,11 +99,18 @@ export function parseResetTime(output, now = new Date()) {
       if (monthIdx !== undefined) {
         const day = Number.parseInt(codexAbsMatch[2], 10);
         candidate.setMonth(monthIdx, day);
+        candidate.setHours(hour, minute, 0, 0);
+        if (codexAbsMatch[3]) {
+          candidate.setFullYear(Number.parseInt(codexAbsMatch[3], 10));
+        } else if (candidate.getTime() < now.getTime() - 6 * 3600_000) {
+          candidate.setFullYear(candidate.getFullYear() + 1);
+        }
       }
-    }
-    candidate.setHours(hour, minute, 0, 0);
-    if (candidate.getTime() < now.getTime() - 6 * 3600_000) {
-      candidate.setFullYear(candidate.getFullYear() + 1);
+    } else {
+      candidate.setHours(hour, minute, 0, 0);
+      if (candidate.getTime() <= now.getTime()) {
+        candidate.setDate(candidate.getDate() + 1);
+      }
     }
     return candidate;
   }
