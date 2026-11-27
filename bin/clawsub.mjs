@@ -99,11 +99,22 @@ function cmdInit(flags) {
   const stateDir = getDefaultStateDir();
   const existing = loadConfig(stateDir);
   const requestedChain = flags.chain
-    ? String(flags.chain)
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
+    ? String(flags.chain).split(",").map((s) => {
+        const t = s.trim();
+        const optional = t.endsWith("?");
+        const spec = optional ? t.slice(0, -1) : t;
+        const colonIdx = spec.indexOf(":");
+        if (colonIdx !== -1 || optional) {
+          const entry = colonIdx !== -1
+            ? { provider: spec.slice(0, colonIdx).toLowerCase(), model: spec.slice(colonIdx + 1) }
+            : { provider: spec.toLowerCase() };
+          if (optional) entry.optional = true;
+          return entry;
+        }
+        return spec.toLowerCase();
+      }).filter(Boolean)
     : existing.chain || ["claude", "codex", "agy"];
+  const noFailover = flags["no-failover"] === true;
 
   const workspace = flags.workspace || existing.workspace || process.cwd();
   const openclawVersion = flags["openclaw-version"] || "latest";
@@ -134,7 +145,9 @@ function cmdInit(flags) {
   }
 
   console.log("\n[2/5] Scanning Subscription CLIs...");
-  const inspected = requestedChain.map((id) => inspectProvider(id));
+  const inspected = requestedChain.map((entry) =>
+    inspectProvider(typeof entry === "string" ? entry : entry.provider)
+  );
   for (const p of inspected) {
     const binBadge = p.installed ? "✓" : "✗";
     const authBadge = p.authenticated ? "logged in" : "needs login";
@@ -146,7 +159,8 @@ function cmdInit(flags) {
   }
 
   const readyCount = inspected.filter((p) => p.installed && p.authenticated).length;
-  if (readyCount === 1 && !requestedChain.includes("agy") && !requestedChain.includes("ollama")) {
+  const chainProviderIds = requestedChain.map((e) => (typeof e === "string" ? e : e.provider));
+  if (readyCount === 1 && !chainProviderIds.includes("agy") && !chainProviderIds.includes("ollama")) {
     console.log(
       "\n  💡 Tip: You have 1 paid subscription CLI configured. Add `agy` (Google Gemini/Antigravity free tier) or `ollama` via `--chain claude,agy` for automatic $0 failover when your 5-hour quota window hits."
     );
@@ -157,6 +171,7 @@ function cmdInit(flags) {
     {
       ...existing,
       chain: requestedChain,
+      ...(noFailover && { failover: false }),
       workspace,
     },
     stateDir

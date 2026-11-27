@@ -21,13 +21,17 @@ import {
   isQuotaError,
   loadState,
   loopInit,
+  normalizeChain,
   parseResetTime,
   PROVIDER_PRICING,
+  PROVIDERS,
   recordTurnSavings,
   recordVersionSnapshot,
   routePrompt,
   runDoctor,
+  saveConfig,
   saveState,
+  validateConfig,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
@@ -1485,4 +1489,240 @@ test("community contribution files exist and contain required sections", () => {
   assert.ok(newProvider.includes("name: New provider adapter"), "new_provider.md must have frontmatter name");
   assert.ok(newProvider.includes("buildCommand"), "new_provider.md must reference buildCommand checklist");
   assert.ok(newProvider.includes("src/providers.mjs"), "new_provider.md must reference src/providers.mjs");
+});
+
+// CS-20: Flexible chain config tests
+
+test("normalizeChain: converts plain strings to { provider } objects", () => {
+  const result = normalizeChain(["claude", "codex", "agy"]);
+  assert.deepEqual(result, [
+    { provider: "claude", optional: false },
+    { provider: "codex", optional: false },
+    { provider: "agy", optional: false },
+  ]);
+});
+
+test("normalizeChain: parses 'provider:model' strings", () => {
+  const result = normalizeChain(["claude:opus", "claude:sonnet", "codex"]);
+  assert.equal(result[0].provider, "claude");
+  assert.equal(result[0].model, "opus");
+  assert.equal(result[1].provider, "claude");
+  assert.equal(result[1].model, "sonnet");
+  assert.equal(result[2].provider, "codex");
+  assert.equal(result[2].model, undefined);
+});
+
+test("normalizeChain: parses '?' suffix as optional", () => {
+  const result = normalizeChain(["claude", "agy?"]);
+  assert.equal(result[0].optional, false);
+  assert.equal(result[1].provider, "agy");
+  assert.equal(result[1].optional, true);
+});
+
+test("normalizeChain: passes through object entries with defaults", () => {
+  const result = normalizeChain([{ provider: "claude", model: "opus" }, { provider: "codex", optional: true }]);
+  assert.equal(result[0].provider, "claude");
+  assert.equal(result[0].model, "opus");
+  assert.equal(result[0].optional, false);
+  assert.equal(result[1].optional, true);
+});
+
+test("normalizeChain: 'provider:model?' combines model and optional", () => {
+  const result = normalizeChain(["claude:opus?"]);
+  assert.equal(result[0].provider, "claude");
+  assert.equal(result[0].model, "opus");
+  assert.equal(result[0].optional, true);
+});
+
+test("validateConfig: empty chain returns error", () => {
+  const errors = validateConfig({ chain: [] });
+  assert.ok(errors.some((e) => /empty/.test(e)));
+});
+
+test("validateConfig: unknown provider returns error", () => {
+  const errors = validateConfig({ chain: ["claude", "nonexistent"] }, PROVIDERS);
+  assert.ok(errors.some((e) => /nonexistent/.test(e)));
+});
+
+test("validateConfig: duplicate identical entries returns error", () => {
+  const errors = validateConfig({ chain: ["claude", "claude"] });
+  assert.ok(errors.some((e) => /Duplicate/.test(e)));
+});
+
+test("validateConfig: same provider with different models is allowed", () => {
+  const errors = validateConfig({ chain: ["claude:opus", "claude:sonnet"] });
+  assert.equal(errors.length, 0);
+});
+
+test("validateConfig: valid chain returns no errors", () => {
+  const errors = validateConfig({ chain: ["claude", "codex", "agy"] });
+  assert.equal(errors.length, 0);
+});
+
+test("routePrompt: object chain entries pass per-entry model to buildCommand", () => {
+  const receivedOpts = [];
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", model: "claude-opus-4-5" }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = ({ command, args }) => {
+    receivedOpts.push({ command, args });
+    return { exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, true);
+  const claudeCall = receivedOpts.find((c) => c.command === "claude");
+  assert.ok(claudeCall, "claude must be called");
+  assert.ok(claudeCall.args.includes("claude-opus-4-5"), "per-entry model must be passed to buildCommand");
+});
+
+test("routePrompt: same provider twice with different models both attempted on failure", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", model: "opus" }, { provider: "claude", model: "sonnet" }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  let call = 0;
+  const runner = () => {
+    call++;
+    if (call === 1) return { exitCode: 0, stdout: "OPUS_OK", stderr: "", latencyMs: 10 };
+    return { exitCode: 0, stdout: "SONNET_OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, true);
+  assert.equal(result.output, "OPUS_OK");
+  assert.equal(call, 1);
+});
+
+test("routePrompt: optional entry silently skipped when not installed", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "agy", optional: true }, "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = ({ command }) => {
+    if (command === "codex") return { exitCode: 0, stdout: "CODEX_OK", stderr: "", latencyMs: 10 };
+    return { exitCode: 1, stdout: "", stderr: "not found", latencyMs: 10 };
+  };
+  // agy not in installedProviders → skipped; codex is installed → runs
+  const result = routePrompt("hello", {
+    now, state, config, runner,
+    installedProviders: new Set(["codex"]),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.provider, "codex");
+  assert.equal(result.output, "CODEX_OK");
+  const agyAttempt = result.attempts.find((a) => a.provider === "agy");
+  assert.ok(agyAttempt, "agy must appear in attempts");
+  assert.equal(agyAttempt.status, "skipped_optional_not_installed");
+});
+
+test("routePrompt: required entry missing causes error (not skipped)", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", optional: false }, { provider: "codex", optional: false }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({ exitCode: 1, stdout: "", stderr: "error", latencyMs: 10 });
+  const result = routePrompt("hello", {
+    now, state, config, runner,
+    installedProviders: new Set(["claude", "codex"]),
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.attempts.every((a) => a.status !== "skipped_optional_not_installed"));
+});
+
+test("routePrompt: per-entry failover:false stops chain on exec error", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", failover: false }, "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const commandsSeen = [];
+  const runner = ({ command }) => {
+    commandsSeen.push(command);
+    return { exitCode: 1, stdout: "", stderr: "exec_error", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.failoverStopped, true);
+  assert.ok(!commandsSeen.includes("codex"), "codex must NOT be tried when failover:false stops chain");
+});
+
+test("routePrompt: top-level failover:false uses only chain[0]", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex", "agy"],
+    failover: false,
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const commandsSeen = [];
+  const runner = ({ command }) => {
+    commandsSeen.push(command);
+    return { exitCode: 0, stdout: "CLAUDE_OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, true);
+  assert.equal(result.provider, "claude");
+  assert.deepEqual(commandsSeen, ["claude"], "only chain[0] must be used in single-agent mode");
+});
+
+test("routePrompt: top-level failover:false stops after chain[0] failure (no codex)", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    failover: false,
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const commandsSeen = [];
+  const runner = ({ command }) => {
+    commandsSeen.push(command);
+    return { exitCode: 1, stdout: "", stderr: "failed", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.deepEqual(commandsSeen, ["claude"], "must only try claude in single-agent mode");
+});
+
+test("runDoctor: optional uninstalled provider is info not error", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doctor-opt-"));
+  const config = {
+    chain: [{ provider: "claude", optional: false }, { provider: "agy", optional: true }],
+    workspace: tmpDir,
+  };
+  saveConfig(config, tmpDir);
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  const agyProvider = report.providers.find((p) => p.id === "agy");
+  assert.ok(agyProvider, "agy must appear in providers");
+  assert.equal(agyProvider.optional, true);
+  // agy not installed in CI → must be in recommendations, not issues
+  if (!agyProvider.installed) {
+    const issueAboutAgy = report.issues.some((i) => /agy/i.test(i) && /not installed/.test(i));
+    assert.equal(issueAboutAgy, false, "optional uninstalled provider must not create an issue");
+    const recAboutAgy = report.recommendations.some((r) => /optional/.test(r) && /agy/i.test(r));
+    assert.ok(recAboutAgy, "optional uninstalled provider must appear in recommendations");
+  }
 });

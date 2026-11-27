@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PROVIDERS, detectBinary, inspectProvider } from "./providers.mjs";
-import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState } from "./state.mjs";
+import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState, normalizeChain } from "./state.mjs";
 
 /**
  * Generates an OpenClaw-compatible CLI runner configuration and wrapper script
@@ -152,12 +152,15 @@ export function runDoctor(opts = {}) {
   const now = opts.now || new Date();
 
   const openclawBin = detectBinary("openclaw");
-  const chain = config.chain || ["claude", "codex", "agy"];
-  const providers = chain.map((id) => {
-    const info = inspectProvider(id, { homeDir: opts.homeDir });
-    const cooldown = getProviderCooldown(state, id, now);
+  const rawChain = config.chain || ["claude", "codex", "agy"];
+  const normalizedChain = normalizeChain(rawChain);
+  const providers = normalizedChain.map((entry) => {
+    const info = inspectProvider(entry.provider, { homeDir: opts.homeDir });
+    const cooldown = getProviderCooldown(state, entry.provider, now);
     return {
       ...info,
+      entryModel: entry.model || null,
+      optional: entry.optional || false,
       coolingDown: cooldown.coolingDown,
       cooldownUntil: cooldown.until,
       remainingMinutes: cooldown.remainingMinutes,
@@ -186,7 +189,11 @@ export function runDoctor(opts = {}) {
 
   for (const p of providers) {
     if (!p.installed) {
-      issues.push(`${p.name} (\`${p.binary}\`) is not installed. Install: ${p.installHint}`);
+      if (p.optional) {
+        recommendations.push(`[optional] ${p.name} (\`${p.binary}\`) is not installed. Install: ${p.installHint}`);
+      } else {
+        issues.push(`${p.name} (\`${p.binary}\`) is not installed. Install: ${p.installHint}`);
+      }
     } else if (!p.authenticated) {
       issues.push(`${p.name} (\`${p.binary}\`) is installed but not logged in. Run: ${p.loginHint}`);
     }

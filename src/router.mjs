@@ -5,30 +5,37 @@ import {
   recordMidTurnCreditExhaustion,
   saveBatonStore,
 } from "./baton.mjs";
-import { PROVIDERS, defaultCommandRunner } from "./providers.mjs";
+import { PROVIDERS, defaultCommandRunner, detectBinary } from "./providers.mjs";
 import { computeCooldownUntil, isAuthError, isHeartbeatPrompt, isQuotaError } from "./quota.mjs";
 import {
   findActiveTimeWindow,
   getProviderCooldown,
   loadConfig,
   loadState,
+  normalizeChain,
   recordTurnSavings,
   saveState,
 } from "./state.mjs";
 
+function isProviderBinaryInstalled(entry, provider, opts) {
+  if (opts.installedProviders !== undefined) {
+    return opts.installedProviders.has(entry.provider);
+  }
+  const bin = detectBinary(provider.binary);
+  if (bin.installed) return true;
+  if (provider.altBinary) return detectBinary(provider.altBinary).installed;
+  return false;
+}
+
 /**
- * Executes a prompt across the configured subscription CLI chain (`claude` -> `codex` -> `agy`)
- * with shared cross-model session pass-down (Context Baton).
+ * Executes a prompt across the configured subscription CLI chain with shared cross-model session pass-down.
  *
- * Features:
- *  - 0ms fast-skip for providers currently in a 5-hour or weekly quota cooldown.
- *  - Shared Context & Session Pass-Down (`src/baton.mjs`):
- *      * When Provider A runs out of credit mid-turn, records partial output + git worktree changes
- *        and passes the baton to Provider B so work continues without losing state.
- *      * Tracks per-provider turn watermarks so when Provider A recovers after cooldown, it receives
- *        the delta turns completed by Provider B/C (zero split-brain amnesia).
- *  - Quota-reservation & quiet-window guardrails for background OpenClaw heartbeats.
- *  - Clean `NO_REPLY` auto-pause on heartbeats or reset-time notice when all providers are exhausted.
+ * Chain entries support flexible config: string IDs, `"claude:opus"`, `"agy?"`, or objects
+ * `{provider, model?, optional?, failover?, args?}`.
+ *
+ * - `optional: true` — silently skip if CLI binary not installed
+ * - `failover: false` on an entry — stop chain on failure (no fall-through to next)
+ * - top-level `config.failover: false` — single-agent mode, only chain[0] is used
  *
  * @param {string} prompt
  * @param {{
@@ -40,6 +47,7 @@ import {
  *   now?: Date,
  *   runner?: Function,
  *   onlyProvider?: string,
+ *   installedProviders?: Set<string>,
  * }} [opts]
  */
 export function routePrompt(prompt, opts = {}) {
@@ -76,13 +84,26 @@ export function routePrompt(prompt, opts = {}) {
     }
   }
 
-  const chain = opts.onlyProvider ? [opts.onlyProvider] : config.chain || ["claude", "codex", "agy"];
+  const rawChain = opts.onlyProvider
+    ? [opts.onlyProvider]
+    : config.chain || ["claude", "codex", "agy"];
+  const normalizedChain = normalizeChain(rawChain);
+  // top-level failover: false = single-agent mode
+  const chain = config.failover === false ? normalizedChain.slice(0, 1) : normalizedChain;
+
   const attempts = [];
 
-  for (const providerId of chain) {
+  for (const entry of chain) {
+    const providerId = entry.provider;
     const provider = PROVIDERS[providerId];
     if (!provider) {
       attempts.push({ provider: providerId, status: "unknown_provider" });
+      continue;
+    }
+
+    // Skip optional entries when their CLI binary is not installed
+    if (entry.optional && !isProviderBinaryInstalled(entry, provider, opts)) {
+      attempts.push({ provider: providerId, status: "skipped_optional_not_installed" });
       continue;
     }
 
@@ -101,7 +122,7 @@ export function routePrompt(prompt, opts = {}) {
       continue;
     }
 
-    // 3. Inject Shared Session Baton (delta turns missed by this provider + any mid-turn credit handoff)
+    // 3. Inject Shared Session Baton
     const baton =
       !heartbeat && config.enableSessionBaton !== false
         ? injectSessionBaton(batonStore, {
@@ -111,10 +132,12 @@ export function routePrompt(prompt, opts = {}) {
           })
         : { prompt, handoffInjected: false, header: null };
 
-    // 4. Build and execute the headless CLI command
+    // 4. Build and execute the headless CLI command (entry-level model/args override providerOptions)
     const cmdSpec = provider.buildCommand(baton.prompt, {
       workspace: config.workspace,
       ...(config.providerOptions?.[providerId] || {}),
+      ...(entry.model && { model: entry.model }),
+      ...(entry.args && { extraArgs: entry.args }),
     });
 
     const result = runner({
@@ -124,7 +147,7 @@ export function routePrompt(prompt, opts = {}) {
 
     const combinedOutput = [result.stdout, result.stderr, result.error].filter(Boolean).join("\n");
 
-    // 5a. Check for auth/credential failure -> 6h cooldown, remediation hint
+    // 5a. Auth failure -> 6h cooldown
     if ((result.exitCode !== 0 || result.error) && isAuthError(combinedOutput)) {
       const until = new Date(now.getTime() + 6 * 3600_000);
       state.providers[providerId] = {
@@ -147,7 +170,7 @@ export function routePrompt(prompt, opts = {}) {
       continue;
     }
 
-    // 5b. Check for subscription quota / rate-limit exhaustion
+    // 5b. Subscription quota exhaustion
     if (isQuotaError(combinedOutput)) {
       const until = computeCooldownUntil(combinedOutput, {
         now,
@@ -161,7 +184,6 @@ export function routePrompt(prompt, opts = {}) {
         lastError: combinedOutput.slice(-400),
       };
 
-      // Record mid-turn credit exhaustion baton (partial progress + modified files in workspace)
       if (!heartbeat && config.enableSessionBaton !== false) {
         recordMidTurnCreditExhaustion(batonStore, {
           sessionKey,
@@ -189,7 +211,7 @@ export function routePrompt(prompt, opts = {}) {
       continue;
     }
 
-    // 6. Non-quota execution failure -> record and fail over to next CLI
+    // 6. Non-quota execution failure
     if (result.exitCode !== 0 || !result.stdout) {
       state.providers[providerId] = {
         ...(state.providers[providerId] || {}),
@@ -206,10 +228,20 @@ export function routePrompt(prompt, opts = {}) {
         exitCode: result.exitCode,
         error: combinedOutput.slice(-200),
       });
+      // failover: false on this entry = stop here, don't try next provider
+      if (entry.failover === false) {
+        return {
+          ok: false,
+          provider: providerId,
+          output: combinedOutput || `${providerId} failed (exit code ${result.exitCode})`,
+          failoverStopped: true,
+          attempts,
+        };
+      }
       continue;
     }
 
-    // 7. Success! Clear any stale cooldown, record completed turn in Shared Session Baton, and return
+    // 7. Success
     state.providers[providerId] = {
       status: "healthy",
       cooldownUntil: null,
@@ -268,10 +300,13 @@ export function routePrompt(prompt, opts = {}) {
     };
   }
 
-  const authExpiredIds = chain.filter(
+  const chainProviderIds = chain.map((e) => e.provider);
+  const chainDisplay = chain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(" -> ");
+
+  const authExpiredIds = chainProviderIds.filter(
     (id) => state.providers?.[id]?.status === "auth_expired"
   );
-  const quotaCooldowns = chain
+  const quotaCooldowns = chainProviderIds
     .filter((id) => !authExpiredIds.includes(id))
     .map((id) => ({ id, ...getProviderCooldown(state, id, now) }))
     .filter((c) => c.coolingDown && c.until)
@@ -287,13 +322,13 @@ export function routePrompt(prompt, opts = {}) {
 
   let resetMsg;
   if (authExpiredIds.length > 0 && quotaCooldowns.length === 0) {
-    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) have expired credentials:\n${authLines}`;
+    resetMsg = `All configured subscription CLIs (${chainDisplay}) have expired credentials:\n${authLines}`;
   } else if (earliest) {
     const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
-    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
+    resetMsg = `All configured subscription CLIs (${chainDisplay}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
   } else {
     const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
-    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authNote}`;
+    resetMsg = `All configured subscription CLIs (${chainDisplay}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authNote}`;
   }
 
   return {

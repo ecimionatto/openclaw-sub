@@ -118,6 +118,57 @@ export function getProviderCooldown(state, providerId, now = new Date()) {
 }
 
 /**
+ * Normalizes a chain array so each entry is an object with at least { provider }.
+ * Accepts: strings like "claude", "claude:opus", "agy?" — or already-normalized objects.
+ * @param {Array<string|object>} chain
+ * @returns {Array<{provider: string, model?: string, optional?: boolean, failover?: boolean, args?: string[]}>}
+ */
+export function normalizeChain(chain) {
+  return (chain || []).map((entry) => {
+    if (typeof entry !== "string") {
+      return { optional: false, ...entry };
+    }
+    const optional = entry.endsWith("?");
+    const spec = optional ? entry.slice(0, -1) : entry;
+    const colonIdx = spec.indexOf(":");
+    if (colonIdx !== -1) {
+      return { provider: spec.slice(0, colonIdx), model: spec.slice(colonIdx + 1), optional };
+    }
+    return { provider: spec, optional };
+  });
+}
+
+/**
+ * Validates a config object's chain field. Returns array of error strings (empty = valid).
+ * @param {object} config
+ * @param {object} [knownProviders] map of known provider IDs (e.g. PROVIDERS from providers.mjs)
+ * @returns {string[]}
+ */
+export function validateConfig(config, knownProviders) {
+  const errors = [];
+  const chain = config.chain || [];
+  if (chain.length === 0) {
+    errors.push("chain must not be empty");
+    return errors;
+  }
+  const normalized = normalizeChain(chain);
+  for (const entry of normalized) {
+    if (knownProviders && !knownProviders[entry.provider]) {
+      errors.push(`Unknown provider in chain: "${entry.provider}"`);
+    }
+  }
+  const seen = new Set();
+  for (const e of normalized) {
+    const key = `${e.provider}:${e.model || ""}`;
+    if (seen.has(key)) {
+      errors.push(`Duplicate identical chain entry: "${e.provider}${e.model ? ":" + e.model : ""}"`);
+    }
+    seen.add(key);
+  }
+  return errors;
+}
+
+/**
  * Checks whether `now` falls inside any "HH:MM-HH:MM" local time window.
  * Supports overnight spans like "23:00-08:00".
  *
