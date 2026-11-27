@@ -1431,6 +1431,20 @@ test("routePrompt preserves auth_expired status and remediation on second-turn c
   );
 });
 
+test("docs/SOCIALIZATION.md contains awesome-list PR kit entries and agent outreach playbooks", () => {
+  const socPath = fileURLToPath(new URL("../docs/SOCIALIZATION.md", import.meta.url));
+  assert.ok(fs.existsSync(socPath), "docs/SOCIALIZATION.md must exist");
+  const content = fs.readFileSync(socPath, "utf8");
+
+  for (const list of ["awesome-openclaw", "awesome-claude-code", "awesome-mcp-servers"]) {
+    assert.ok(content.includes(list), `SOCIALIZATION.md must contain an entry for ${list}`);
+  }
+
+  assert.ok(content.includes("Awesome-list"), "SOCIALIZATION.md must contain an Awesome-list section heading");
+  assert.ok(content.includes("CLAUDE.md") || content.includes("AGENTS.md"), "SOCIALIZATION.md must contain agent-to-agent recommendation snippet referencing CLAUDE.md or AGENTS.md");
+  assert.ok(content.includes("openclaw-sub"), "SOCIALIZATION.md agent snippet must reference openclaw-sub");
+});
+
 test("community contribution files exist and contain required sections", () => {
   const contributing = fs.readFileSync(fileURLToPath(new URL("../CONTRIBUTING.md", import.meta.url)), "utf8");
   assert.ok(contributing.includes("buildCommand"), "CONTRIBUTING.md must document buildCommand");
