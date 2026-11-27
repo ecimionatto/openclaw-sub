@@ -1649,10 +1649,37 @@ test("parseGeminiJsonlEvent handles init, assistant messages, result with stats,
     parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "error" })),
     { kind: "result", text: "", errorText: "Gemini CLI ended with status error" }
   );
-  // standalone type:"error" event
+  // standalone type:"error" events are non-terminal — final outcome is in the result event
   assert.deepEqual(
-    parseGeminiJsonlEvent(JSON.stringify({ type: "error", message: "fatal error" })),
-    { kind: "result", text: "", errorText: "fatal error" }
+    parseGeminiJsonlEvent(JSON.stringify({ type: "error", severity: "warning", message: "rate limit warning" })),
+    []
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "error", severity: "error", message: "transient error" })),
+    []
+  );
+  // warning → assistant text → successful result: warning must not cut off the run
+  assert.deepEqual(parseGeminiJsonlEvent(JSON.stringify({ type: "error", severity: "warning", message: "warn" })), []);
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "assistant", content: "Here is my answer" })),
+    [{ kind: "text", text: "Here is my answer" }]
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "success" })),
+    { kind: "result", text: "" }
+  );
+  // init → message → result without response field: text is "" (host preserves accumulated deltas)
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "init", session_id: "s1" })),
+    { kind: "sessionId", sessionId: "s1" }
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "message", role: "assistant", content: "delta" })),
+    [{ kind: "text", text: "delta" }]
+  );
+  assert.deepEqual(
+    parseGeminiJsonlEvent(JSON.stringify({ type: "result", status: "success" })),
+    { kind: "result", text: "" }
   );
   // malformed line returns null
   assert.equal(parseGeminiJsonlEvent("not-json"), null);

@@ -13,8 +13,9 @@ export function normalizeAgyUsage(raw) {
   if (typeof raw.output_tokens === "number" && Number.isFinite(raw.output_tokens)) {
     usage.output = raw.output_tokens;
   }
-  if (typeof raw.cache_read_tokens === "number" && Number.isFinite(raw.cache_read_tokens)) {
-    usage.cacheRead = raw.cache_read_tokens;
+  const cacheRead = raw.cache_read_tokens ?? raw.cached;
+  if (typeof cacheRead === "number" && Number.isFinite(cacheRead)) {
+    usage.cacheRead = cacheRead;
   }
   if (typeof raw.total_tokens === "number" && Number.isFinite(raw.total_tokens)) {
     usage.total = raw.total_tokens;
@@ -108,8 +109,9 @@ export function parseGeminiJsonlEvent(line) {
   }
 
   if (parsed.type === "error") {
-    const msg = typeof parsed.message === "string" ? parsed.message.trim() : "Gemini CLI error";
-    return { kind: "result", text: "", errorText: msg };
+    // Gemini emits {type:"error", severity:"warning"|"error"} mid-stream for non-fatal events;
+    // the final outcome is in the later "result" event, so we don't terminate early here.
+    return [];
   }
 
   if (parsed.type === "done" || parsed.type === "result") {
