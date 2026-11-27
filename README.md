@@ -32,7 +32,7 @@ If you just point a 24/7 agent at a subscription CLI out of the box, four things
 
 ## Cost & Reliability Comparison
 
-> See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for a full 30-day workload model, per-provider cost breakdown, failure recovery timelines, and copy-pasteable reproduction commands.
+> See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for a full 30-day workload model, per-provider cost breakdown, failure recovery timelines, copy-pasteable reproduction commands, and [SDLC loop effectiveness numbers](docs/BENCHMARKS.md#sdlc-loop-effectiveness) (before/after A/B comparison for the fix-prompt).
 
 | Setup | Extra Monthly API Bill | When Primary Hits 5h/Weekly Limit | Overnight Heartbeat Drain |
 | :--- | :--- | :--- | :--- |

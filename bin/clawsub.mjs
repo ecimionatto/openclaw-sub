@@ -26,12 +26,14 @@ import {
 } from "../src/versions.mjs";
 import { installSystemdService } from "../src/ubuntu-systemd.mjs";
 import { loopInit } from "../src/loop.mjs";
+import { evalMetrics } from "../src/eval.mjs";
 
 function printHelp() {
   console.log(`🦞 clawsub (openclaw-sub v${CLAWSUB_VERSION})
 Run OpenClaw 24/7 on flat-rate AI subscriptions (Claude, Codex, Antigravity/Gemini) with $0 API bills.
 
 Usage:
+  clawsub eval metrics [--log <path>] [--json]
   clawsub loop init [--workspace <path>] [--dry-run] [--force]
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
@@ -578,6 +580,17 @@ function main() {
 
   if (subcmd === "version") {
     cmdVersion(flags);
+    return;
+  }
+
+  if (subcmd === "eval") {
+    const evalSubcmd = positional[1];
+    if (evalSubcmd === "metrics") {
+      evalMetrics({ logPath: flags.log, json: !!flags.json });
+    } else {
+      console.error(`Unknown eval subcommand: ${evalSubcmd || "(none)"}. Use: clawsub eval metrics`);
+      process.exit(1);
+    }
     return;
   }
 
