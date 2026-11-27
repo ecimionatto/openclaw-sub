@@ -52,8 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Serialize releases so concurrent merges don't race to tag the same version.
-    # cancel-in-progress: false ensures a pending run is not cancelled by a later one.
+    # Serialize releases: only one release runs at a time.
+    # With cancel-in-progress: false the in-progress run always finishes; a queued
+    # pending run is replaced by a newer push. Each run releases exactly its own
+    # tested SHA independently, so being superseded is safe.
     concurrency:
       group: release
       cancel-in-progress: false
@@ -64,30 +66,49 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Pull latest main so a commit pushed by a concurrent release is visible
-      # and our version bump won't be rejected as non-fast-forward.
-      - name: Pull latest main
-        run: git pull origin main
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Detect existing release tag for this SHA
+        id: existing_tag
+        run: |
+          TAG=$(git tag --points-at "$GITHUB_SHA" | grep '^v' | head -1)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          [ -n "$TAG" ] && echo "SHA $GITHUB_SHA already tagged as $TAG — will reuse"
+
       - name: Compute next version
         id: version
         run: |
-          SINCE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$SINCE" ]; then
-            VERSION=$(node scripts/next-version.mjs --current "$SINCE" --since "$SINCE")
+          if [ -n "${{ steps.existing_tag.outputs.tag }}" ]; then
+            VERSION="${{ steps.existing_tag.outputs.tag }}"
+            VERSION="${VERSION#v}"
           else
-            CURRENT=$(node -e "process.stdout.write(require('./package.json').version)")
-            VERSION=$(node scripts/next-version.mjs --current "$CURRENT")
+            SINCE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -n "$SINCE" ]; then
+              VERSION=$(node scripts/next-version.mjs --current "$SINCE" --since "$SINCE")
+            else
+              CURRENT=$(node -e "process.stdout.write(require('./package.json').version)")
+              VERSION=$(node scripts/next-version.mjs --current "$CURRENT")
+            fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Computed next version: $VERSION"
+          echo "Next version: $VERSION"
 
-      - name: Bump package.json version
+      - name: Tag tested SHA and push
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping"
+          else
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "$TAG"
+          fi
+
+      - name: Set package.json version for publish
         run: |
           node -e "
             const fs = require('fs');
@@ -95,23 +116,6 @@ jobs:
             p.version = '${{ steps.version.outputs.version }}';
             fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
           "
-
-      # Push the bump commit and tag atomically so either both land or neither does.
-      # If the tag already exists (re-run after partial failure), skip to avoid
-      # a non-fast-forward push error on the bump commit.
-      - name: Commit, tag, and push atomically
-        run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — skipping commit and push"
-          else
-            git add package.json
-            git diff --cached --quiet || git commit -m "chore(release): $TAG [skip ci]"
-            git tag "$TAG"
-            git push --atomic origin HEAD "$TAG"
-          fi
 
       - name: Create GitHub Release
         env:
@@ -161,6 +165,20 @@ jobs:
           if [ -z "$NODE_AUTH_TOKEN" ]; then
             echo "::notice::NPM_TOKEN secret not set — skipping dist-tag promotion"
           else
-            npm dist-tag add "openclaw-sub@${{ needs.release.outputs.version }}" latest
-            echo "Promoted openclaw-sub@${{ needs.release.outputs.version }} to latest"
+            VERSION="${{ needs.release.outputs.version }}"
+            CURRENT_LATEST=$(npm view openclaw-sub dist-tags.latest 2>/dev/null || echo "0.0.0")
+            # Skip if latest is already >= VERSION to prevent rolling back a newer release.
+            SHOULD_PROMOTE=$(node -e "
+              const v = s => s.replace(/^v/,'').split('.').map(Number);
+              const a = v('$CURRENT_LATEST');
+              const b = v('$VERSION');
+              const cmp = a[0]!==b[0] ? a[0]-b[0] : a[1]!==b[1] ? a[1]-b[1] : a[2]-b[2];
+              process.stdout.write(cmp < 0 ? 'yes' : 'no');
+            ")
+            if [ "\$SHOULD_PROMOTE" = "yes" ]; then
+              npm dist-tag add "openclaw-sub@$VERSION" latest
+              echo "Promoted openclaw-sub@$VERSION to latest"
+            else
+              echo "::notice::Skipping promotion: latest ($CURRENT_LATEST) is already >= $VERSION"
+            fi
           fi

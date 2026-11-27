@@ -104,15 +104,17 @@ describe('next-version integration (real git repo)', () => {
     assert.equal(r.stdout.trim(), '0.2.1');
   });
 
-  it('no-tag fallback: script exits without error and prints a semver', () => {
+  it('no-tag fallback: script exits without error and prints 0.1.0 for feat commit', () => {
     const noTagDir = makeRepo();
     try {
       writeFileSync(join(noTagDir, 'README.md'), '');
       git(noTagDir, 'add', '.');
       git(noTagDir, 'commit', '-m', 'feat: initial');
-      const r = spawnSync('node', [SCRIPT], { cwd: noTagDir, encoding: 'utf8' });
+      // Pass --current 0.0.0 so the result is deterministic regardless of project version.
+      const r = spawnSync('node', [SCRIPT, '--current', '0.0.0'], { cwd: noTagDir, encoding: 'utf8' });
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
+      // 0.0.0 base + feat: → minor bump → 0.1.0
+      assert.equal(r.stdout.trim(), '0.1.0');
     } finally {
       rmSync(noTagDir, { recursive: true, force: true });
     }

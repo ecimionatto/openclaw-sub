@@ -12,7 +12,7 @@ Releases are **fully automated**. Every green push to `main` triggers the CD pip
 | CD pipeline triggers | GitHub Actions | `.github/workflows/cd.yml` |
 | Next semver computed | `scripts/next-version.mjs` | Conventional commits since last tag |
 | `package.json` bumped, commit + tag pushed | GitHub Actions bot | `[skip ci]` commit + `vX.Y.Z` tag |
-| GitHub Release created with auto-generated notes | `softprops/action-gh-release` | Attached: `install-ubuntu.sh`, `SKILL.md` |
+| GitHub Release created with auto-generated notes | `gh release create` | Attached: `install-ubuntu.sh`, `SKILL.md` |
 | `npm publish --tag next` | GitHub Actions | Only when `NPM_TOKEN` secret is set |
 | **Manual review** in GitHub Environment `production` | **Edson** | Required approval gate |
 | `npm dist-tag add openclaw-sub@X.Y.Z latest` | GitHub Actions | Runs after approval |
@@ -53,7 +53,7 @@ npm version 1.0.0 --no-git-tag-version
 npm publish --access public
 ```
 
-The CD pipeline will detect that the tag already exists and skip the commit/tag/publish steps for that run.
+The CD pipeline will **not** publish exactly `v1.0.0`: it tags the tested merge commit (not any pre-pushed tag), so it will compute the next version above `v1.0.0` for that merge. The manual `npm publish` above also publishes straight to `latest`, bypassing the `production` approval gate — add the dist-tag explicitly after review if you want to keep the gated flow. Use `[skip ci]` in the merge commit message to suppress the CD run entirely for that merge.
 
 ### Roll back a bad publish
 ```bash
