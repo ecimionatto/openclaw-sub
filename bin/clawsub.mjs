@@ -117,7 +117,7 @@ function cmdInit(flags) {
 
   const chainErrors = validateConfig({ chain: requestedChain }, PROVIDERS);
   if (chainErrors.length > 0) {
-    console.error(`Error: invalid --chain — ${chainErrors.join("; ")}`);
+    console.error(`Error: invalid ${chainProvided ? "--chain" : "chain config"} — ${chainErrors.join("; ")}`);
     process.exit(1);
   }
 
@@ -187,7 +187,8 @@ function cmdInit(flags) {
   );
   const integration = generateOpenClawIntegration({
     stateDir,
-    chain: saved.chain.map((e) => (typeof e === "string" ? e : e.provider)),
+    chain: saved.chain,
+    failover: saved.failover,
     workspace: saved.workspace,
   });
   const snap = recordVersionSnapshot(stateDir, "init");

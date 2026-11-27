@@ -170,6 +170,12 @@ export function validateConfig(config, knownProviders) {
     if ("failover" in entry && typeof entry.failover !== "boolean") {
       errors.push(`per-entry "failover" for "${entry.provider}" must be a boolean`);
     }
+    if (entry.model !== undefined && typeof entry.model !== "string") {
+      errors.push(`per-entry "model" for "${entry.provider}" must be a string`);
+    }
+    if (entry.optional !== undefined && typeof entry.optional !== "boolean") {
+      errors.push(`per-entry "optional" for "${entry.provider}" must be a boolean`);
+    }
   }
   const seen = new Set();
   for (const e of normalized) {

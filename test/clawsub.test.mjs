@@ -33,7 +33,7 @@ import {
   saveState,
   validateConfig,
 } from "../src/index.mjs";
-import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
+import { configureOpenClawJson, inspectOpenClawJson } from "../src/openclaw-config.mjs";
 import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
@@ -2183,4 +2183,177 @@ test("cmdInit/cmdTest: lowercase normalizer preserves mixed-case model IDs", () 
   const parsed = normalizeChain(["claude:Opus-4,codex"].flatMap((s) => s.split(",")).map(normalize));
   assert.equal(parsed[0]?.provider, "claude");
   assert.equal(parsed[0]?.model, "Opus-4", "model case must be preserved");
+});
+
+// ── CS-20 fix-up: validateConfig model and optional type checks ───────────────
+
+test("validateConfig: non-string model returns error", () => {
+  const errors = validateConfig({ chain: [{ provider: "claude", model: 42 }] });
+  assert.ok(errors.some((e) => /model.*string/.test(e)), `expected model type error, got: ${errors}`);
+});
+
+test("validateConfig: non-boolean optional returns error", () => {
+  const errors = validateConfig({ chain: [{ provider: "claude", optional: "false" }] });
+  assert.ok(errors.some((e) => /optional.*boolean/.test(e)), `expected optional type error, got: ${errors}`);
+});
+
+test("validateConfig: valid model string and optional boolean passes", () => {
+  const errors = validateConfig({ chain: [{ provider: "claude", model: "opus", optional: false }] });
+  assert.equal(errors.length, 0);
+});
+
+// ── CS-20 fix-up: configureOpenClawJson ──────────────────────────────────────
+
+test("configureOpenClawJson: basic order and model mapping", () => {
+  const result = configureOpenClawJson({
+    chain: ["claude", "codex", "agy"],
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, ["codex", "agy"]);
+});
+
+test("configureOpenClawJson: per-entry model included in ID", () => {
+  const result = configureOpenClawJson({
+    chain: [{ provider: "claude", model: "opus" }, { provider: "claude", model: "sonnet" }, "codex"],
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude:opus");
+  assert.deepStrictEqual(result.fallbacks, ["claude:sonnet", "codex"]);
+});
+
+test("configureOpenClawJson: same provider twice with different models", () => {
+  const result = configureOpenClawJson({
+    chain: [{ provider: "claude", model: "opus" }, { provider: "claude", model: "sonnet" }],
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude:opus");
+  assert.deepStrictEqual(result.fallbacks, ["claude:sonnet"]);
+});
+
+test("configureOpenClawJson: single entry produces empty fallbacks", () => {
+  const result = configureOpenClawJson({ chain: ["claude"], homeDir: os.tmpdir() });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, []);
+});
+
+test("configureOpenClawJson: top-level failover:false produces empty fallbacks", () => {
+  const result = configureOpenClawJson({
+    chain: ["claude", "codex", "agy"],
+    failover: false,
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, []);
+});
+
+test("configureOpenClawJson: per-entry failover:false truncates chain after that entry", () => {
+  const result = configureOpenClawJson({
+    chain: [{ provider: "claude", failover: false }, "codex", "agy"],
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, [], "no fallbacks after failover:false entry");
+});
+
+test("configureOpenClawJson: per-entry failover:false mid-chain truncates at that point", () => {
+  const result = configureOpenClawJson({
+    chain: ["claude", { provider: "codex", failover: false }, "agy"],
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, ["codex"]);
+});
+
+test("configureOpenClawJson: uninstalled optional entry is excluded", () => {
+  const result = configureOpenClawJson({
+    chain: ["claude", { provider: "agy", optional: true }, "codex"],
+    installedProviders: new Set(["claude", "codex"]),
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, ["codex"]);
+});
+
+test("configureOpenClawJson: installed optional entry is included", () => {
+  const result = configureOpenClawJson({
+    chain: ["claude", { provider: "agy", optional: true }, "codex"],
+    installedProviders: new Set(["claude", "agy", "codex"]),
+    homeDir: os.tmpdir(),
+  });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, ["agy", "codex"]);
+});
+
+test("configureOpenClawJson: empty chain returns claude as primary default", () => {
+  const result = configureOpenClawJson({ chain: [], homeDir: os.tmpdir() });
+  assert.equal(result.primary, "claude");
+  assert.deepStrictEqual(result.fallbacks, []);
+});
+
+test("configureOpenClawJson: writes into existing openclaw.json when present", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-ocjson-"));
+  try {
+    const ocDir = path.join(tmpDir, ".openclaw");
+    fs.mkdirSync(ocDir, { recursive: true });
+    const jsonPath = path.join(ocDir, "openclaw.json");
+    fs.writeFileSync(jsonPath, JSON.stringify({ version: 1 }, null, 2) + "\n", "utf8");
+
+    configureOpenClawJson({ chain: ["claude", "codex"], homeDir: tmpDir });
+
+    const updated = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+    assert.equal(updated.version, 1, "existing fields must be preserved");
+    assert.equal(updated.agents.defaults.model.primary, "claude");
+    assert.deepStrictEqual(updated.agents.defaults.model.fallbacks, ["codex"]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("generateOpenClawIntegration: agentsDefaults reflects chain order and models", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-genint-"));
+  try {
+    const out = generateOpenClawIntegration({
+      stateDir: tmpDir,
+      chain: [{ provider: "claude", model: "opus" }, "codex"],
+      workspace: tmpDir,
+    });
+    assert.equal(out.profile.agentsDefaults.primary, "claude:opus");
+    assert.deepStrictEqual(out.profile.agentsDefaults.fallbacks, ["codex"]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("generateOpenClawIntegration: failover:false produces empty fallbacks in agentsDefaults", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-genint-nofail-"));
+  try {
+    const out = generateOpenClawIntegration({
+      stateDir: tmpDir,
+      chain: ["claude", "codex"],
+      failover: false,
+      workspace: tmpDir,
+    });
+    assert.equal(out.profile.agentsDefaults.primary, "claude");
+    assert.deepStrictEqual(out.profile.agentsDefaults.fallbacks, []);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit: init output generates correct agentsDefaults in profile", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-agd-"));
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  try {
+    spawnSync(process.execPath, [binPath, "init", "--chain", "claude:opus,codex"], {
+      env: { ...process.env, CLAWSUB_HOME: tmpDir },
+      encoding: "utf8",
+    });
+    const profilePath = path.join(tmpDir, "openclaw-sub-profile.json");
+    const profile = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+    assert.equal(profile.agentsDefaults.primary, "claude:opus");
+    assert.deepStrictEqual(profile.agentsDefaults.fallbacks, ["codex"]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
