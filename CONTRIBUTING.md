@@ -15,7 +15,7 @@ No `npm install` needed — the project has zero runtime dependencies (Node.js >
 
 ## Ground Rules
 
-- **Zero external runtime dependencies.** Use only `node:fs`, `node:path`, `node:os`, `node:child_process`, `node:test`, `node:assert/strict`. Never add entries to `dependencies` in `package.json`.
+- **Zero external runtime dependencies.** Node built-in modules only (e.g. `node:fs`, `node:path`, `node:os`, `node:child_process`, `node:test`, `node:assert/strict`, `node:url`). Never add entries to `dependencies` in `package.json`.
 - **Test-first.** Add or update tests in `test/clawsub.test.mjs` before changing implementation code.
 - **No hardcoded paths or secrets.** Use `os.homedir()`, `process.env.CLAWSUB_HOME`, or explicit function parameters.
 - **Functional style.** Prefer immutable data and pure functions; avoid shared mutable state.
@@ -48,7 +48,7 @@ Confirm three things about the target subscription CLI:
 | Does it support a non-interactive / headless mode? | `clawsub` runs the CLI without a terminal; interactive prompts will hang forever. |
 | Where does it store its OAuth session? | Used in `checkAuth` to detect whether the user is logged in. |
 
-> **Supported examples:** `cursor` (Cursor Business), `gh copilot` (GitHub Copilot CLI), `windsurf` (Windsurf Pro).
+> **Candidate examples:** `cursor` (Cursor Business), `gh copilot` (GitHub Copilot CLI), `windsurf` (Windsurf Pro).
 
 #### 2. Write the test first
 
@@ -64,7 +64,7 @@ test("providers: myNewCLI adapter shape is valid", () => {
 
   const cmd = p.buildCommand("hello world");
   assert.ok(Array.isArray(cmd.args));
-  assert.ok(cmd.command === "myNewCLI");
+  assert.equal(cmd.command, p.binary);
 });
 ```
 
@@ -126,23 +126,17 @@ myNewCLI: {
 
 #### 4. Add the provider to the default chain (optional)
 
-If the new provider should appear in the default failover chain, add its `id` to the `DEFAULT_CHAIN` array in `src/index.mjs`. Open an issue first if you are unsure — changing the default chain affects all users.
+If the new provider should appear in the default failover chain, add its `id` to the inline `chain` defaults in `src/openclaw-config.mjs` and `src/router.mjs` (search for `["claude", "codex", "agy"]`). Open an issue first if you are unsure — changing the default chain affects all users.
 
 #### 5. Document the quota / reset signals
 
-Subscription CLIs emit different error messages when the quota is exhausted. Add any new error patterns to `test/fixtures/cli-errors/` as a `.json` fixture with the shape:
+Subscription CLIs emit different error messages when the quota is exhausted. Add any new error patterns to `test/fixtures/cli-errors/` as a plain-text `.txt` file containing the raw stderr output, then add a corresponding row to the hardcoded table in the `"fixture-driven: each cli-error fixture classifies and parses correctly"` test in `test/clawsub.test.mjs`:
 
-```json
-{
-  "provider": "myNewCLI",
-  "exitCode": 1,
-  "stderr": "Rate limit exceeded. Try again at 6:30 PM.",
-  "expectedClassification": "quota_exceeded",
-  "expectedResetTime": "18:30"
-}
+```js
+{ file: "mynewcli-quota-exceeded.txt", isQuota: true, isAuth: false, parsed: null },
 ```
 
-The existing fixture-driven test in `clawsub.test.mjs` will pick it up automatically.
+If the error includes a parseable reset time, set `parsed` to an object with the expected time fields (`hours`, `minutes`, `day`, etc.).
 
 #### 6. Verify everything
 

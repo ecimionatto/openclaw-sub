@@ -34,7 +34,7 @@ assignees: ""
 ## Full error output
 
 ```
-<!-- Paste the complete stderr/stdout here. Run with CLAWSUB_DEBUG=1 for extra detail. -->
+<!-- Paste the complete stderr/stdout here. -->
 ```
 
 ## Additional context
