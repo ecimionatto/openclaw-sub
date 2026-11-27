@@ -2078,3 +2078,118 @@ test("runDoctor: required missing provider is an issue, not a recommendation", (
   const issueAboutClaude = report.issues.some((i) => /claude/i.test(i) && /not installed/.test(i));
   assert.ok(issueAboutClaude, "required missing provider must produce an issue (not a recommendation)");
 });
+
+// ── CS-20 fix-up: validateConfig type checks ─────────────────────────────────
+
+test("validateConfig: non-array chain returns clear type error", () => {
+  const errors = validateConfig({ chain: "claude,codex" });
+  assert.ok(errors.length > 0, "must return errors for non-array chain");
+  assert.ok(errors[0].includes('"chain"'), `error must mention "chain": ${errors[0]}`);
+});
+
+test("validateConfig: failover:\"false\" (string) returns clear type error", () => {
+  const errors = validateConfig({ chain: ["claude"], failover: "false" });
+  assert.ok(errors.length > 0, "must return errors for string failover");
+  assert.ok(errors.some((e) => e.includes('"failover"')), `error must mention "failover": ${errors}`);
+});
+
+test("validateConfig: non-array args per entry returns error", () => {
+  const errors = validateConfig({ chain: [{ provider: "claude", args: "--flag" }] });
+  assert.ok(errors.length > 0, "must return errors for non-array args");
+  assert.ok(errors.some((e) => e.includes('"args"')), `error must mention "args": ${errors}`);
+});
+
+test("normalizeChain: non-array input returns empty array", () => {
+  assert.deepStrictEqual(normalizeChain("claude,codex"), []);
+  assert.deepStrictEqual(normalizeChain(null), []);
+  assert.deepStrictEqual(normalizeChain(undefined), []);
+});
+
+// ── CS-20 fix-up: heartbeat NO_REPLY on failover:false + cooldown/auth/quota ──
+
+test("routePrompt: heartbeat on failover:false + cooldown fast-skip returns NO_REPLY", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const cooldownUntil = new Date(now.getTime() + 60 * 60_000).toISOString();
+  const state = { providers: { claude: { status: "cooldown", cooldownUntil } } };
+  const config = {
+    chain: [{ provider: "claude", failover: false }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const hbPrompt = "[OpenClaw heartbeat poll]\nIf nothing needs attention, reply NO_REPLY.";
+  const result = routePrompt(hbPrompt, { now, state, config, runner: () => {} });
+  assert.equal(result.output, "NO_REPLY", "heartbeat on failover:false cooldown must return NO_REPLY");
+  assert.equal(result.ok, true);
+  assert.equal(result.failoverStopped, true);
+});
+
+test("routePrompt: heartbeat on failover:false + auth failure returns NO_REPLY", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", failover: false }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const hbPrompt = "[OpenClaw heartbeat poll]\nIf nothing needs attention, reply NO_REPLY.";
+  const runner = () => ({
+    exitCode: 1,
+    stdout: "",
+    stderr: "OAuth token refresh failed — not logged in",
+    latencyMs: 10,
+  });
+  const result = routePrompt(hbPrompt, { now, state, config, runner });
+  assert.equal(result.output, "NO_REPLY", "heartbeat on failover:false auth failure must return NO_REPLY");
+  assert.equal(result.ok, true);
+  assert.equal(result.failoverStopped, true);
+});
+
+test("routePrompt: heartbeat on failover:false + quota exhaustion returns NO_REPLY", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [{ provider: "claude", failover: false }],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const hbPrompt = "[OpenClaw heartbeat poll]\nIf nothing needs attention, reply NO_REPLY.";
+  const runner = () => ({
+    exitCode: 1,
+    stdout: "usage_limit_reached — try again in 120 minutes",
+    stderr: "",
+    latencyMs: 10,
+  });
+  const result = routePrompt(hbPrompt, { now, state, config, runner });
+  assert.equal(result.output, "NO_REPLY", "heartbeat on failover:false quota must return NO_REPLY");
+  assert.equal(result.ok, true);
+  assert.equal(result.failoverStopped, true);
+});
+
+// ── CS-20 fix-up: onlyProvider with model-qualified key ──────────────────────
+
+test("routePrompt: onlyProvider with model-qualified key selects correct model entry", () => {
+  const receivedArgs = [];
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: [
+      { provider: "claude", model: "opus" },
+      { provider: "claude", model: "sonnet" },
+    ],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = ({ args }) => {
+    receivedArgs.push(args);
+    return { exitCode: 0, stdout: "OK", stderr: "", latencyMs: 10 };
+  };
+  const result = routePrompt("hello", { now, state, config, runner, onlyProvider: "claude:sonnet" });
+  assert.equal(result.ok, true);
+  assert.ok(receivedArgs[0]?.includes("sonnet"), "must use sonnet model");
+  assert.ok(!receivedArgs[0]?.includes("opus"), "must NOT use opus model");
+  assert.equal(state.providers["claude:sonnet"]?.status, "healthy");
+});

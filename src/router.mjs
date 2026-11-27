@@ -96,8 +96,12 @@ export function routePrompt(prompt, opts = {}) {
   let rawChain;
   if (opts.onlyProvider) {
     const normalizedConfigChain = normalizeChain(config.chain || ["claude", "codex", "agy"]);
-    const matched = normalizedConfigChain.find((e) => e.provider === opts.onlyProvider);
-    rawChain = matched ? [matched] : [opts.onlyProvider];
+    const matchKey = opts.onlyProvider;
+    const matched = normalizedConfigChain.find((e) => {
+      const entryKey = e.model ? `${e.provider}:${e.model}` : e.provider;
+      return entryKey === matchKey || (!matchKey.includes(":") && e.provider === matchKey);
+    });
+    rawChain = matched ? [matched] : [matchKey];
   } else {
     rawChain = config.chain || ["claude", "codex", "agy"];
   }
@@ -137,6 +141,9 @@ export function routePrompt(prompt, opts = {}) {
         ...(authExpired && pState.remediation && { remediation: pState.remediation }),
       });
       if (entry.failover === false) {
+        if (heartbeat) {
+          return { ok: true, provider: null, output: "NO_REPLY", failoverStopped: true, attempts };
+        }
         return {
           ok: false,
           provider: providerId,
@@ -196,6 +203,9 @@ export function routePrompt(prompt, opts = {}) {
         remediation: `openclaw models auth login --provider ${providerId} --force`,
       });
       if (entry.failover === false) {
+        if (heartbeat) {
+          return { ok: true, provider: null, output: "NO_REPLY", failoverStopped: true, attempts };
+        }
         return {
           ok: false,
           provider: providerId,
@@ -246,6 +256,9 @@ export function routePrompt(prompt, opts = {}) {
         handoffRecorded: !heartbeat,
       });
       if (entry.failover === false) {
+        if (heartbeat) {
+          return { ok: true, provider: null, output: "NO_REPLY", failoverStopped: true, attempts };
+        }
         return {
           ok: false,
           provider: providerId,

@@ -124,7 +124,8 @@ export function getProviderCooldown(state, providerId, now = new Date()) {
  * @returns {Array<{provider: string, model?: string, optional?: boolean, failover?: boolean, args?: string[]}>}
  */
 export function normalizeChain(chain) {
-  return (chain || []).map((entry) => {
+  if (!Array.isArray(chain)) return [];
+  return chain.map((entry) => {
     if (typeof entry !== "string") {
       return { optional: false, ...entry };
     }
@@ -146,15 +147,28 @@ export function normalizeChain(chain) {
  */
 export function validateConfig(config, knownProviders) {
   const errors = [];
-  const chain = config.chain || [];
+  const chain = config.chain;
+  if (!Array.isArray(chain)) {
+    errors.push(`"chain" must be an array, got ${typeof chain}`);
+    return errors;
+  }
   if (chain.length === 0) {
     errors.push("chain must not be empty");
     return errors;
+  }
+  if ("failover" in config && typeof config.failover !== "boolean") {
+    errors.push(`"failover" must be a boolean, got ${JSON.stringify(config.failover)}`);
   }
   const normalized = normalizeChain(chain);
   for (const entry of normalized) {
     if (knownProviders && !knownProviders[entry.provider]) {
       errors.push(`Unknown provider in chain: "${entry.provider}"`);
+    }
+    if (entry.args !== undefined && !Array.isArray(entry.args)) {
+      errors.push(`"args" for provider "${entry.provider}" must be an array`);
+    }
+    if ("failover" in entry && typeof entry.failover !== "boolean") {
+      errors.push(`per-entry "failover" for "${entry.provider}" must be a boolean`);
     }
   }
   const seen = new Set();

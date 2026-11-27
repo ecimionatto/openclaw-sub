@@ -378,7 +378,7 @@ function cmdStatus(flags) {
   }
 
   console.log(`🦞 clawsub status (v${CLAWSUB_VERSION})\n`);
-  console.log(`Chain:               ${normalizedStatusChain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(" -> ")}`);;
+  console.log(`Chain:               ${normalizedStatusChain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(" -> ")}`);
   console.log(`Workspace:           ${config.workspace}`);
   console.log(`Last Active CLI:     ${state.lastActiveProvider || "(none yet)"}`);
   console.log(`Quiet Windows:       ${(config.quietWindows || []).join(", ") || "none"}`);
@@ -436,10 +436,12 @@ function cmdTest(flags) {
   const stateDir = getDefaultStateDir();
   const config = loadConfig(stateDir);
   const chain = flags.chain
-    ? String(flags.chain)
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
+    ? normalizeChain(
+        String(flags.chain)
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean)
+      ).map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider))
     : normalizeChain(config.chain || ["claude", "codex", "agy"]).map((e) =>
         e.model ? `${e.provider}:${e.model}` : e.provider
       );
@@ -456,7 +458,7 @@ function cmdTest(flags) {
     }
     const res = routePrompt(`reply with exactly: ${token}`, {
       stateDir,
-      onlyProvider: id,
+      onlyProvider: entry,
     });
     const matched = res.ok && res.output.includes(token);
     if (matched) {

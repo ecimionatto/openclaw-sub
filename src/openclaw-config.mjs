@@ -6,7 +6,7 @@ import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState, normali
 
 /**
  * Maps a normalized chain into the OpenClaw JSON `agents.defaults` model config.
- * When failover is off, fallbackModels is omitted.
+ * When failover is off, fallbacks is omitted.
  *
  * @param {Array<string|object>} chain
  * @param {{ failover?: boolean }} [opts]
