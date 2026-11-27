@@ -193,3 +193,34 @@ Use `.github/ISSUE_TEMPLATE/bug_report.md`. Include your OS, Node.js version, `c
 ## Code of Conduct
 
 Be kind. Be direct. Focus on the work.
+
+---
+
+## Release Flow (CD Pipeline)
+
+Every green merge to `main` ships automatically via `.github/workflows/cd.yml`.
+
+### How the pipeline works
+
+1. **Unit tests** run on Node 18, 20, and 22.
+2. **Docker e2e** builds the image and runs the test container.
+3. **Eval scenarios** (CS-18) run `test/eval.test.mjs`.
+4. **Release job** (after all three pass):
+   - Runs `scripts/next-version.mjs` to compute the next semver from conventional commits since the last tag.
+   - Bumps `package.json`, commits with `[skip ci]`, and pushes a `vX.Y.Z` tag.
+   - Creates a GitHub Release with auto-generated notes.
+   - Runs `npm publish --tag next` if `NPM_TOKEN` is set; prints a notice and skips otherwise.
+5. **Promote job** (gated by the `production` GitHub Environment — requires Edson's approval):
+   - Runs `npm dist-tag add openclaw-sub@X.Y.Z latest`.
+
+### Semver bump rules
+
+| Commit prefix | Bump |
+|---------------|------|
+| `feat:` | **minor** |
+| `fix:`, `chore:`, `perf:`, etc. | **patch** |
+| `feat!:` or `BREAKING CHANGE:` | **major** (but stays **minor** while no `v1.x` tag exists) |
+
+Write your commit/PR title using the [Conventional Commits](https://www.conventionalcommits.org/) format — it drives the version bump directly.
+
+See `docs/RELEASE-CHECKLIST.md` for edge-case procedures (rollbacks, forced versions, skipping CI).
