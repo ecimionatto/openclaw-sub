@@ -6,7 +6,7 @@ import {
   saveBatonStore,
 } from "./baton.mjs";
 import { PROVIDERS, defaultCommandRunner } from "./providers.mjs";
-import { computeCooldownUntil, isHeartbeatPrompt, isQuotaError } from "./quota.mjs";
+import { computeCooldownUntil, isAuthError, isHeartbeatPrompt, isQuotaError } from "./quota.mjs";
 import {
   findActiveTimeWindow,
   getProviderCooldown,
@@ -89,11 +89,14 @@ export function routePrompt(prompt, opts = {}) {
     // 2. Fast-skip providers currently in active quota cooldown (0ms overhead)
     const cd = getProviderCooldown(state, providerId, now);
     if (cd.coolingDown) {
+      const pState = state.providers?.[providerId] || {};
+      const authExpired = pState.status === "auth_expired";
       attempts.push({
         provider: providerId,
-        status: "skipped_cooldown",
+        status: authExpired ? "auth_expired" : "skipped_cooldown",
         cooldownUntil: cd.until,
         remainingMinutes: cd.remainingMinutes,
+        ...(authExpired && pState.remediation && { remediation: pState.remediation }),
       });
       continue;
     }
@@ -121,7 +124,30 @@ export function routePrompt(prompt, opts = {}) {
 
     const combinedOutput = [result.stdout, result.stderr, result.error].filter(Boolean).join("\n");
 
-    // 5. Check for subscription quota / rate-limit exhaustion
+    // 5a. Check for auth/credential failure -> 6h cooldown, remediation hint
+    if ((result.exitCode !== 0 || result.error) && isAuthError(combinedOutput)) {
+      const until = new Date(now.getTime() + 6 * 3600_000);
+      state.providers[providerId] = {
+        ...(state.providers[providerId] || {}),
+        status: "auth_expired",
+        cooldownUntil: until.toISOString(),
+        lastErrorAt: now.toISOString(),
+        lastError: combinedOutput.slice(-400),
+        remediation: `openclaw models auth login --provider ${providerId} --force`,
+      };
+      if (stateDir || !opts.state) {
+        saveState(state, stateDir);
+      }
+      attempts.push({
+        provider: providerId,
+        status: "auth_expired",
+        cooldownUntil: until.toISOString(),
+        remediation: `openclaw models auth login --provider ${providerId} --force`,
+      });
+      continue;
+    }
+
+    // 5b. Check for subscription quota / rate-limit exhaustion
     if (isQuotaError(combinedOutput)) {
       const until = computeCooldownUntil(combinedOutput, {
         now,
@@ -242,21 +268,39 @@ export function routePrompt(prompt, opts = {}) {
     };
   }
 
-  const activeCooldowns = chain
+  const authExpiredIds = chain.filter(
+    (id) => state.providers?.[id]?.status === "auth_expired"
+  );
+  const quotaCooldowns = chain
+    .filter((id) => !authExpiredIds.includes(id))
     .map((id) => ({ id, ...getProviderCooldown(state, id, now) }))
     .filter((c) => c.coolingDown && c.until)
     .sort((a, b) => new Date(a.until).getTime() - new Date(b.until).getTime());
 
-  const earliest = activeCooldowns[0];
-  const resetMsg = earliest
-    ? `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).`
-    : `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.`;
+  const earliest = quotaCooldowns[0];
+  const authLines = authExpiredIds
+    .map((id) => {
+      const rem = state.providers[id]?.remediation;
+      return rem ? `  ${id}: auth expired, run \`${rem}\`` : `  ${id}: auth expired`;
+    })
+    .join("\n");
+
+  let resetMsg;
+  if (authExpiredIds.length > 0 && quotaCooldowns.length === 0) {
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) have expired credentials:\n${authLines}`;
+  } else if (earliest) {
+    const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) are currently in quota cooldown. Earliest reset: ${earliest.id} at ${earliest.until} (~${earliest.remainingMinutes} min).${authNote}`;
+  } else {
+    const authNote = authExpiredIds.length > 0 ? `\nAuth expired:\n${authLines}` : "";
+    resetMsg = `All configured subscription CLIs (${chain.join(" -> ")}) failed to respond. Run \`clawsub doctor\` to check CLI login state.${authNote}`;
+  }
 
   return {
     ok: false,
     provider: null,
     output: resetMsg,
-    allCoolingDown: activeCooldowns.length > 0,
+    allCoolingDown: quotaCooldowns.length > 0 || authExpiredIds.length > 0,
     attempts,
   };
 }

@@ -16,9 +16,11 @@ import {
   getProviderCooldown,
   installOpenClawUbuntu,
   installSkill,
+  isAuthError,
   isHeartbeatPrompt,
   isQuotaError,
   loadState,
+  loopInit,
   parseResetTime,
   PROVIDER_PRICING,
   recordTurnSavings,
@@ -81,6 +83,151 @@ test("computeCooldownUntil adds safety buffer to parsed reset time or falls back
     defaultMinutes: 60,
   });
   assert.equal(fallback.getTime() - now.getTime(), 60 * 60_000);
+});
+
+test("isQuotaError table: session/model/weekly limits, curly apostrophe, Request rejected (429)", () => {
+  const hits = [
+    "You’ve hit your session limit.",
+    "You've hit your session limit.",
+    "You’ve hit your weekly limit. Resets Mon 12:00am.",
+    "You’ve hit your usage limit. Try again at Nov 28th, 2026 3:45 PM.",
+    "You've hit your Opus limit for this week.",
+    "You've hit your Sonnet limit. Resets in 2 hours.",
+    "Request rejected (429): too many requests",
+  ];
+  for (const msg of hits) {
+    assert.equal(isQuotaError(msg), true, `should match: ${msg}`);
+  }
+  assert.equal(isQuotaError("Everything is working fine."), false);
+});
+
+test("parseResetTime: weekday reset 'resets Mon 12:00am'", () => {
+  // now = Wednesday Nov 25 2026 16:00 — next Monday is Nov 30
+  const now = new Date(2026, 10, 25, 16, 0);
+  const result = parseResetTime("You’ve hit your weekly limit. Resets Mon 12:00am.", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getDay(), 1, "should be a Monday");
+  assert.equal(result.getHours(), 0);
+  assert.equal(result.getMinutes(), 0);
+  assert.ok(result > now, "reset must be in the future");
+});
+
+test("parseResetTime: Codex 'Try again at 3:45 PM'", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const result = parseResetTime("You’ve hit your usage limit. Try again at 3:45 PM.", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+  assert.ok(result > now);
+});
+
+test("parseResetTime: Codex absolute 'Try again at Nov 28th, 2026 3:45 PM'", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const result = parseResetTime("Try again at Nov 28th, 2026 3:45 PM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getMonth(), 10);
+  assert.equal(result.getDate(), 28);
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+});
+
+test("isAuthError table: Not logged in, OAuth, Invalid API key, RefreshTokenFailed", () => {
+  const hits = [
+    "Error: Not logged in. Please run `claude login`.",
+    "OAuth token refresh failed: token expired",
+    "Error: Invalid API key provided.",
+    "RefreshTokenFailed: unable to refresh OAuth credentials",
+  ];
+  for (const msg of hits) {
+    assert.equal(isAuthError(msg), true, `should match: ${msg}`);
+  }
+  assert.equal(isAuthError("Normal response OK"), false);
+  assert.equal(isAuthError("You've hit your 5-hour limit"), false);
+});
+
+test("routePrompt sets auth_expired status with 6h cooldown and remediation on auth failure", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts[0].status, "auth_expired");
+  assert.ok(result.attempts[0].remediation.includes("openclaw models auth login"));
+  assert.ok(result.attempts[0].remediation.includes("--provider claude"));
+  assert.ok(result.attempts[0].remediation.includes("--force"));
+  const cooldownUntil = new Date(state.providers.claude.cooldownUntil);
+  assert.ok(cooldownUntil.getTime() - now.getTime() >= 6 * 3600_000 - 1000);
+  assert.ok(cooldownUntil.getTime() - now.getTime() <= 6 * 3600_000 + 1000);
+});
+
+test("routePrompt all-auth chain: output names auth cause, not quota cooldown", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  const runner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes("expired credentials"), `expected 'expired credentials' in: ${result.output}`);
+  assert.ok(!result.output.includes("quota cooldown"), `should not mention quota cooldown in: ${result.output}`);
+  assert.ok(result.output.includes("claude: auth expired"), `expected per-provider label in: ${result.output}`);
+  assert.ok(result.output.includes("codex: auth expired"), `expected per-provider label in: ${result.output}`);
+  assert.ok(result.output.includes("openclaw models auth login"), `expected remediation cmd in: ${result.output}`);
+});
+
+test("routePrompt mixed auth/quota chain: quota reset shown, auth listed separately", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = {
+    chain: ["claude", "codex"],
+    workspace: "/tmp",
+    quietWindows: [],
+    quotaReservationWindows: [],
+  };
+  let call = 0;
+  const runner = () => {
+    call++;
+    if (call === 1) {
+      return {
+        stdout: '{"type":"result","error":"usage_limit_reached: resets 6:50pm"}',
+        stderr: "",
+        exitCode: 1,
+        latencyMs: 10,
+      };
+    }
+    return {
+      stdout: "",
+      stderr: "OAuth token refresh failed: token expired",
+      exitCode: 1,
+      latencyMs: 10,
+    };
+  };
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes("quota cooldown"), `expected quota cooldown in: ${result.output}`);
+  assert.ok(result.output.includes("Auth expired"), `expected auth section in: ${result.output}`);
+  assert.ok(result.output.includes("codex: auth expired"), `expected per-provider auth label in: ${result.output}`);
+  assert.ok(!result.output.includes("quota cooldown") || result.output.includes("claude"), `quota reset should reference claude`);
 });
 
 test("routePrompt fails over from claude -> codex on 5-hour quota limit and fast-skips claude on next turn", () => {
@@ -255,13 +402,37 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
   assert.equal(snap.label, "unit-test");
   assert.equal(fs.existsSync(path.join(tmpDir, "clawsub-versions.json")), true);
 
-  // 2. Skill installation into workspace (`skills/clawsub/SKILL.md` + `.agents/skills/clawsub/SKILL.md`)
+  // 2. Skill installation into workspace: writes .claude/skills, skills (ClawHub), and .agents/skills
   const sk = installSkill({ workspace: tmpDir });
-  assert.equal(sk.installedPaths.length, 2);
-  for (const p of sk.installedPaths) {
-    assert.equal(fs.existsSync(p), true);
-    assert.match(fs.readFileSync(p, "utf8"), /name:\s*clawsub/);
-  }
+  assert.equal(sk.installedPaths.length, 3);
+  const claudePath = path.join(tmpDir, ".claude", "skills", "clawsub", "SKILL.md");
+  const clawHubPath = path.join(tmpDir, "skills", "clawsub", "SKILL.md");
+  const agentsPath = path.join(tmpDir, ".agents", "skills", "clawsub", "SKILL.md");
+  assert.ok(sk.installedPaths.includes(claudePath), ".claude/skills path must be in installedPaths");
+  assert.ok(sk.installedPaths.includes(clawHubPath), "skills path must be in installedPaths");
+  assert.ok(sk.installedPaths.includes(agentsPath), ".agents/skills path must be in installedPaths");
+  assert.equal(fs.existsSync(claudePath), true);
+  assert.equal(fs.existsSync(clawHubPath), true);
+  assert.equal(fs.existsSync(agentsPath), true);
+  assert.match(fs.readFileSync(claudePath, "utf8"), /name:\s*clawsub/);
+
+  // 2b. Skill installation with --global also writes ~/.openclaw/skills/clawsub/SKILL.md
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
+  const skGlobal = installSkill({ workspace: tmpDir, global: true, homeDir });
+  assert.equal(skGlobal.installedPaths.length, 4);
+  const globalPath = path.join(homeDir, ".openclaw", "skills", "clawsub", "SKILL.md");
+  assert.ok(skGlobal.installedPaths.includes(globalPath), "global path must be in installedPaths");
+  assert.equal(fs.existsSync(globalPath), true);
+  assert.match(fs.readFileSync(globalPath, "utf8"), /name:\s*clawsub/);
+
+  // 2c. Root SKILL.md must be byte-identical to skills/clawsub/SKILL.md (no drift)
+  const rootSkillPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../SKILL.md");
+  const pkgSkillPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../skills/clawsub/SKILL.md");
+  assert.equal(
+    fs.readFileSync(rootSkillPath, "utf8"),
+    fs.readFileSync(pkgSkillPath, "utf8"),
+    "Root SKILL.md must be byte-identical to skills/clawsub/SKILL.md"
+  );
 
   // 3. Ubuntu installer dry-run and mocked execution with version pinning
   const dry = installOpenClawUbuntu({
@@ -859,6 +1030,19 @@ test("saveState/loadState round-trip preserves savings and handles legacy state 
   assert.equal(legacy.savings.firstRecordedAt, null);
 });
 
+test("saveState/loadState: new provider cooldown survives round-trip (generic providers object)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-newprovider-"));
+  const cooldownUntil = new Date(Date.now() + 3_600_000).toISOString();
+  const state = {
+    providers: { myNewCLI: { status: "cooldown", cooldownUntil } },
+    savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null },
+  };
+  saveState(state, tmpDir);
+  const loaded = loadState(tmpDir);
+  assert.equal(loaded.providers.myNewCLI.cooldownUntil, cooldownUntil, "cooldown must survive reload");
+  assert.equal(loaded.providers.myNewCLI.status, "cooldown");
+});
+
 test("cmdSavings CLI command outputs savings for both empty and populated state dirs", () => {
   const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
 
@@ -1009,4 +1193,296 @@ test("agent discovery manifests exist and are well-formed", () => {
   assert.ok(pkgJson.files.includes(".well-known/"), "package.json files must include .well-known/");
   assert.ok(pkgJson.files.includes("llms.txt"), "package.json files must include llms.txt");
   assert.ok(pkgJson.files.includes("llms-full.txt"), "package.json files must include llms-full.txt");
+});
+
+test("loopInit copies all loop-pack files into workspace/.clawsub-loop and returns cron lines", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-"));
+  const result = loopInit({ workspace: tmpDir });
+
+  assert.equal(result.dryRun, false);
+  assert.equal(result.destDir, path.join(tmpDir, ".clawsub-loop"));
+  assert.equal(result.copied.length, 6);
+
+  const expectedFiles = [
+    "SKILL.md",
+    "templates/BACKLOG.md",
+    "templates/worker-prompt.md",
+    "templates/fix-prompt.md",
+    "templates/review-prompt.md",
+    "templates/standup.md",
+  ];
+
+  for (const file of expectedFiles) {
+    const dest = path.join(tmpDir, ".clawsub-loop", file);
+    assert.ok(fs.existsSync(dest), `${file} must be copied`);
+    assert.ok(fs.readFileSync(dest, "utf8").length > 0, `${file} must not be empty`);
+  }
+
+  assert.ok(Array.isArray(result.cronLines), "cronLines must be an array");
+  assert.ok(result.cronLines.length >= 2, "at least 2 cron lines");
+  assert.ok(result.cronLines.some((l) => l.includes(tmpDir)), "cron lines include resolved workspace path");
+  assert.ok(result.cronLines.some((l) => /AGENT_CMD/.test(l)), "cron lines include AGENT_CMD placeholder");
+});
+
+test("loopInit dry-run returns expected paths without writing files", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-dry-"));
+  const result = loopInit({ workspace: tmpDir, dryRun: true });
+
+  assert.equal(result.dryRun, true);
+  assert.equal(result.copied.length, 6);
+  assert.ok(!fs.existsSync(result.destDir), "dry-run must not create destDir");
+  assert.ok(result.copied.every((p) => p.startsWith(result.destDir)), "all paths are under destDir");
+});
+
+test("loopInit skips existing files and an edited BACKLOG.md survives re-run", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-skip-"));
+  loopInit({ workspace: tmpDir });
+
+  const backlogPath = path.join(tmpDir, ".clawsub-loop", "templates", "BACKLOG.md");
+  const edited = "# My custom backlog\n| MY-1 | custom task | high | todo |\n";
+  fs.writeFileSync(backlogPath, edited, "utf8");
+
+  const result2 = loopInit({ workspace: tmpDir });
+  assert.equal(fs.readFileSync(backlogPath, "utf8"), edited, "edited BACKLOG.md must not be overwritten");
+  assert.ok(result2.skipped.some((p) => p.endsWith("BACKLOG.md")), "BACKLOG.md must appear in skipped");
+  assert.ok(result2.copied.length + result2.skipped.length === 6, "copied + skipped === total files");
+});
+
+test("loopInit resolves relative workspace to absolute and quotes paths in cron lines", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-abs-"));
+  const relPath = path.relative(process.cwd(), tmpDir);
+  const result = loopInit({ workspace: relPath, dryRun: true });
+
+  assert.ok(path.isAbsolute(result.destDir), "destDir must be absolute");
+  assert.ok(result.cronLines.some((l) => l.includes(`'${tmpDir}'`)), "cron lines must single-quote the absolute workspace path");
+});
+
+test("loopInit force=true overwrites an edited file", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-force-"));
+  loopInit({ workspace: tmpDir });
+
+  const backlogPath = path.join(tmpDir, ".clawsub-loop", "templates", "BACKLOG.md");
+  fs.writeFileSync(backlogPath, "custom content");
+
+  const result = loopInit({ workspace: tmpDir, force: true });
+  assert.ok(result.copied.some((p) => p.endsWith("BACKLOG.md")), "BACKLOG.md must be in copied with force=true");
+  assert.equal(result.skipped.length, 0, "nothing should be skipped when force=true");
+  assert.notEqual(fs.readFileSync(backlogPath, "utf8"), "custom content", "file must be overwritten");
+});
+
+test("loopInit cron lines escape percent signs for crontab compatibility", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-loop-cron-"));
+  const result = loopInit({ workspace: tmpDir, dryRun: true });
+  // Strip leading '# ' to get the actual schedule content (all lines are commented out as examples)
+  const scheduleLines = result.cronLines
+    .map((l) => l.replace(/^#\s*/, ""))
+    .filter((l) => /^[\d*]/.test(l));
+  assert.ok(scheduleLines.length >= 1, "at least one schedule line must exist");
+  assert.ok(scheduleLines.some((l) => l.includes("%")), "at least one schedule line must contain % (to verify escaping is tested)");
+  for (const line of scheduleLines) {
+    assert.ok(!/(?<!\\)%/.test(line), `schedule line must not contain unescaped % (crontab treats it as newline): ${line}`);
+  }
+});
+
+test("CLI loop init --force passes force to loopInit and overwrites files", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-cli-force-"));
+  loopInit({ workspace: tmpDir });
+
+  const backlogPath = path.join(tmpDir, ".clawsub-loop", "templates", "BACKLOG.md");
+  fs.writeFileSync(backlogPath, "edited");
+
+  spawnSync(process.execPath, ["./bin/clawsub.mjs", "loop", "init", "--workspace", tmpDir, "--force"], {
+    cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+  });
+
+  assert.notEqual(fs.readFileSync(backlogPath, "utf8"), "edited", "--force must overwrite edited file via CLI");
+});
+
+test("fixture-driven: each cli-error fixture classifies and parses correctly", () => {
+  const fixtureDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/cli-errors");
+  const nowRef = new Date(2026, 10, 25, 10, 0); // Nov 25 2026 10:00 AM
+
+  const table = [
+    { file: "claude-not-logged-in.txt",       isQuota: false, isAuth: true,  parsed: null },
+    { file: "claude-oauth-refresh-failed.txt", isQuota: false, isAuth: true,  parsed: null },
+    { file: "claude-request-rejected-429.txt", isQuota: true,  isAuth: false, parsed: null },
+    { file: "claude-session-limit.txt",        isQuota: true,  isAuth: false, parsed: null },
+    { file: "claude-weekly-limit.txt",         isQuota: true,  isAuth: false,
+      parsed: { day: 1, hours: 0, minutes: 0 } },
+    { file: "codex-invalid-api-key.txt",       isQuota: false, isAuth: true,  parsed: null },
+    { file: "codex-refresh-token-failed.txt",  isQuota: false, isAuth: true,  parsed: null },
+    { file: "codex-try-again-at.txt",          isQuota: true,  isAuth: false,
+      parsed: { hours: 15, minutes: 45 } },
+    { file: "codex-usage-limit.txt",           isQuota: true,  isAuth: false,
+      parsed: { month: 10, date: 28, hours: 15, minutes: 45 } },
+  ];
+
+  for (const { file, isQuota, isAuth, parsed } of table) {
+    const text = fs.readFileSync(path.join(fixtureDir, file), "utf8");
+    assert.equal(isQuotaError(text), isQuota, `${file}: isQuota should be ${isQuota}`);
+    assert.equal(isAuthError(text), isAuth, `${file}: isAuth should be ${isAuth}`);
+    if (parsed) {
+      const result = parseResetTime(text, nowRef);
+      assert.ok(result, `${file}: parseResetTime should return a date`);
+      assert.ok(result > nowRef, `${file}: parsed time must be in the future`);
+      if (parsed.day !== undefined) assert.equal(result.getDay(), parsed.day, `${file}: wrong weekday`);
+      if (parsed.month !== undefined) assert.equal(result.getMonth(), parsed.month, `${file}: wrong month`);
+      if (parsed.date !== undefined) assert.equal(result.getDate(), parsed.date, `${file}: wrong date`);
+      if (parsed.hours !== undefined) assert.equal(result.getHours(), parsed.hours, `${file}: wrong hours`);
+      if (parsed.minutes !== undefined) assert.equal(result.getMinutes(), parsed.minutes, `${file}: wrong minutes`);
+    }
+  }
+});
+
+test("parseResetTime: Codex cross-midnight 'Try again at 1:00 AM' at 23:00 rolls to next day", () => {
+  const now = new Date(2026, 10, 25, 23, 0); // Nov 25 2026 11pm
+  const result = parseResetTime("Try again at 1:00 AM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getHours(), 1);
+  assert.equal(result.getMinutes(), 0);
+  assert.equal(result.getDate(), 26, "should be Nov 26");
+  assert.ok(result > now, "result must be in the future");
+});
+
+test("parseResetTime: Codex year-boundary 'Try again at Jan 2nd, 2027 3:45 PM' parsed in December 2026", () => {
+  const now = new Date(2026, 11, 20, 10, 0); // Dec 20 2026
+  const result = parseResetTime("Try again at Jan 2nd, 2027 3:45 PM", now);
+  assert.ok(result, "should return a date");
+  assert.equal(result.getFullYear(), 2027);
+  assert.equal(result.getMonth(), 0);
+  assert.equal(result.getDate(), 2);
+  assert.equal(result.getHours(), 15);
+  assert.equal(result.getMinutes(), 45);
+  assert.ok(result > now, "result must be in the future");
+});
+
+test("routePrompt does not trigger auth_expired when exitCode=0 and stdout contains auth text", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = { chain: ["claude"], workspace: "/tmp", quietWindows: [], quotaReservationWindows: [] };
+  const runner = () => ({
+    stdout: "To answer your question: auth_expired tokens cause invalid API key errors. Not logged in is a common mistake.",
+    stderr: "",
+    exitCode: 0,
+    latencyMs: 10,
+  });
+  const result = routePrompt("hello", { now, state, config, runner });
+  assert.equal(result.ok, true, "should succeed despite auth text in successful stdout");
+  assert.equal(result.attempts[0].status, "ok");
+  assert.equal(state.providers.claude?.status, "healthy");
+});
+
+test("runDoctor reports auth_expired providers with remediation command from state", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-doc-auth-"));
+  const expiredState = {
+    providers: {
+      claude: {
+        status: "auth_expired",
+        cooldownUntil: new Date(Date.now() + 6 * 3600_000).toISOString(),
+        remediation: "openclaw models auth login --provider claude --force",
+      },
+    },
+    savings: { providers: {}, firstRecordedAt: null, lastRecordedAt: null },
+  };
+  fs.writeFileSync(path.join(tmpDir, "clawsub-state.json"), JSON.stringify(expiredState));
+
+  const report = runDoctor({ stateDir: tmpDir, homeDir: tmpDir });
+  assert.ok(
+    report.issues.some((i) => /claude/.test(i) && /auth_expired/.test(i)),
+    "Expected auth_expired issue for claude"
+  );
+  assert.ok(
+    report.recommendations.some((r) => r === "openclaw models auth login --provider claude --force"),
+    "Expected exact auth login command for claude"
+  );
+});
+
+test("routePrompt preserves auth_expired status and remediation on second-turn cooldown skip", () => {
+  const now = new Date(2026, 10, 25, 10, 0);
+  const state = { providers: {} };
+  const config = { chain: ["claude"], workspace: "/tmp", quietWindows: [], quotaReservationWindows: [] };
+  const authRunner = () => ({
+    stdout: "",
+    stderr: "OAuth token refresh failed: token expired",
+    exitCode: 1,
+    latencyMs: 10,
+  });
+  // Turn 1: claude fails with auth error
+  routePrompt("hello", { now, state, config, runner: authRunner });
+  assert.equal(state.providers.claude?.status, "auth_expired");
+
+  // Turn 2 (1 min later): claude still in 6h cooldown
+  const turn2 = routePrompt("world", {
+    now: new Date(now.getTime() + 60_000),
+    state,
+    config,
+    runner: authRunner,
+  });
+  assert.equal(turn2.ok, false, "single-provider chain, still cooling");
+  const skipped = turn2.attempts[0];
+  assert.equal(skipped.status, "auth_expired", "skipped attempt must carry auth_expired status");
+  assert.ok(
+    skipped.remediation?.includes("openclaw models auth login"),
+    "skipped attempt must include remediation"
+  );
+  assert.ok(
+    turn2.output.includes("openclaw models auth login --provider claude --force"),
+    "human-readable output must reference remediation"
+  );
+});
+
+test("docs/SOCIALIZATION.md contains awesome-list PR kit entries and agent outreach playbooks", () => {
+  const socPath = fileURLToPath(new URL("../docs/SOCIALIZATION.md", import.meta.url));
+  assert.ok(fs.existsSync(socPath), "docs/SOCIALIZATION.md must exist");
+  const content = fs.readFileSync(socPath, "utf8");
+
+  assert.ok(content.includes("## 5. Awesome-list PR Kit"), "SOCIALIZATION.md must contain Section 5 heading");
+
+  const repoUrl = "https://github.com/ecimionatto/openclaw-sub";
+  for (const list of ["awesome-openclaw", "awesome-claude-code", "awesome-mcp-servers"]) {
+    const headingIdx = content.indexOf(`### ${list}`);
+    assert.ok(headingIdx !== -1, `SOCIALIZATION.md must contain a ### ${list} subsection`);
+    const sliceStart = headingIdx + `### ${list}`.length;
+    const rest = content.slice(sliceStart);
+    const nextHeadingMatch = rest.search(/\n##+ [A-Za-z0-9]/);
+    const slice = nextHeadingMatch === -1 ? rest : rest.slice(0, nextHeadingMatch);
+    assert.ok(
+      slice.includes(`[openclaw-sub](${repoUrl})`),
+      `${list} entry must include the full markdown link [openclaw-sub](${repoUrl})`
+    );
+    assert.ok(slice.includes("Suggested PR title"), `${list} subsection must have a Suggested PR title`);
+    assert.ok(slice.includes("Suggested PR body"), `${list} subsection must have a Suggested PR body`);
+  }
+
+  assert.ok(content.includes("## 6."), "SOCIALIZATION.md must contain Section 6 heading");
+  const sec6Start = content.indexOf("## 6.");
+  const afterSec6 = content.slice(sec6Start);
+  const nextSecHeading = afterSec6.search(/\n## \d/);
+  const sec6 = nextSecHeading === -1 ? afterSec6 : afterSec6.slice(0, nextSecHeading);
+  assert.ok(sec6.includes("openclaw-sub"), "Section 6 fenced block must reference openclaw-sub");
+  assert.ok(
+    sec6.includes("npx openclaw-sub init"),
+    "Section 6 must include the npx quick-start command"
+  );
+  assert.ok(
+    sec6.includes("CLAUDE.md") || sec6.includes("AGENTS.md"),
+    "Section 6 must reference CLAUDE.md or AGENTS.md"
+  );
+});
+
+test("community contribution files exist and contain required sections", () => {
+  const contributing = fs.readFileSync(fileURLToPath(new URL("../CONTRIBUTING.md", import.meta.url)), "utf8");
+  assert.ok(contributing.includes("buildCommand"), "CONTRIBUTING.md must document buildCommand");
+  assert.ok(contributing.includes("checkAuth"), "CONTRIBUTING.md must document checkAuth");
+  assert.ok(contributing.includes("checkHeadlessSafety"), "CONTRIBUTING.md must document checkHeadlessSafety");
+  assert.ok(contributing.includes("src/providers.mjs"), "CONTRIBUTING.md must reference src/providers.mjs");
+
+  const bugReport = fs.readFileSync(fileURLToPath(new URL("../.github/ISSUE_TEMPLATE/bug_report.md", import.meta.url)), "utf8");
+  assert.ok(bugReport.includes("name: Bug report"), "bug_report.md must have frontmatter name");
+  assert.ok(bugReport.includes("Steps to reproduce"), "bug_report.md must include reproduction steps");
+
+  const newProvider = fs.readFileSync(fileURLToPath(new URL("../.github/ISSUE_TEMPLATE/new_provider.md", import.meta.url)), "utf8");
+  assert.ok(newProvider.includes("name: New provider adapter"), "new_provider.md must have frontmatter name");
+  assert.ok(newProvider.includes("buildCommand"), "new_provider.md must reference buildCommand checklist");
+  assert.ok(newProvider.includes("src/providers.mjs"), "new_provider.md must reference src/providers.mjs");
 });

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Stub: simulates Claude CLI
+# --version: reports installed, quota hit on prompt invocation
+case "$1" in
+  --version)
+    echo "1.0.0-stub"
+    exit 0
+    ;;
+  *)
+    echo "You've hit your 5-hour limit. Resets at 11:59pm." >&2
+    exit 1
+    ;;
+esac
