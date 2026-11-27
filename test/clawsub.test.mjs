@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   CLAWSUB_VERSION,
   computeCooldownUntil,
+  computeLoopMetrics,
   computeSavings,
   findActiveTimeWindow,
   generateOpenClawIntegration,
@@ -21,6 +22,7 @@ import {
   isQuotaError,
   loadState,
   loopInit,
+  parseLoopLog,
   parseResetTime,
   PROVIDER_PRICING,
   recordTurnSavings,
@@ -1416,4 +1418,103 @@ test("routePrompt preserves auth_expired status and remediation on second-turn c
     turn2.output.includes("openclaw models auth login --provider claude --force"),
     "human-readable output must reference remediation"
   );
+});
+
+test("parseLoopLog parses STARTED, APPROVE, FIX, FIX_APPLIED, FIX_EXHAUSTED, BLOCK events", () => {
+  const log = [
+    '2026-11-01T10:00:00Z TASK CS-01 STARTED',
+    '2026-11-01T10:05:00Z TASK CS-01 APPROVE sha=abc123',
+    '2026-11-01T11:00:00Z TASK CS-02 STARTED',
+    '2026-11-01T11:10:00Z TASK CS-02 FIX reason="missing test" sha=def456',
+    '2026-11-01T11:20:00Z TASK CS-02 FIX_APPLIED sha=ghi789',
+    '2026-11-01T11:25:00Z TASK CS-02 APPROVE sha=ghi789',
+    '2026-11-01T12:00:00Z TASK CS-03 STARTED',
+    '2026-11-01T12:10:00Z TASK CS-03 FIX reason="type error" sha=jkl012',
+    '2026-11-01T12:15:00Z TASK CS-03 FIX_EXHAUSTED sha=jkl012',
+    '2026-11-01T12:16:00Z TASK CS-03 BLOCK reason="fix_exhausted" sha=jkl012',
+  ].join('\n');
+
+  const events = parseLoopLog(log);
+  assert.equal(events.length, 10);
+  assert.equal(events[0].event, 'STARTED');
+  assert.equal(events[1].event, 'APPROVE');
+  assert.equal(events[1].sha, 'abc123');
+  assert.equal(events[3].event, 'FIX');
+  assert.equal(events[3].reason, 'missing test');
+  assert.equal(events[9].event, 'BLOCK');
+});
+
+test("parseLoopLog ignores blank lines and non-matching lines", () => {
+  const log = '\n# comment\n2026-11-01T10:00:00Z TASK CS-01 APPROVE sha=abc\n\nbad line here\n';
+  const events = parseLoopLog(log);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, 'APPROVE');
+});
+
+test("computeLoopMetrics returns zeros for empty event list", () => {
+  const m = computeLoopMetrics([]);
+  assert.equal(m.total, 0);
+  assert.equal(m.firstPassApprovalRate, 0);
+  assert.equal(m.avgFixRounds, 0);
+});
+
+test("computeLoopMetrics calculates correct rates for mixed outcomes", () => {
+  const log = [
+    '2026-11-01T10:00:00Z TASK CS-01 STARTED',
+    '2026-11-01T10:05:00Z TASK CS-01 APPROVE sha=a',
+    '2026-11-01T11:00:00Z TASK CS-02 STARTED',
+    '2026-11-01T11:10:00Z TASK CS-02 FIX reason="bug" sha=b',
+    '2026-11-01T11:20:00Z TASK CS-02 FIX_APPLIED sha=c',
+    '2026-11-01T11:25:00Z TASK CS-02 APPROVE sha=c',
+    '2026-11-01T12:00:00Z TASK CS-03 STARTED',
+    '2026-11-01T12:10:00Z TASK CS-03 FIX reason="type error" sha=d',
+    '2026-11-01T12:15:00Z TASK CS-03 FIX_EXHAUSTED sha=d',
+    '2026-11-01T12:16:00Z TASK CS-03 BLOCK reason="fix_exhausted" sha=d',
+  ].join('\n');
+
+  const events = parseLoopLog(log);
+  const m = computeLoopMetrics(events);
+
+  assert.equal(m.total, 3);
+  assert.equal(m.approved, 2);
+  assert.equal(m.blocked, 1);
+  // 1 of 3 tasks approved without any fix
+  assert.equal(m.firstPassApprovalRate, +(1/3).toFixed(4));
+  // 1 of 2 tasks that had a fix round got approved
+  assert.equal(m.fixSuccessRate, 0.5);
+  assert.equal(m.blockRate, +(1/3).toFixed(4));
+  // total fix rounds = 2 (CS-02 had 1, CS-03 had 1), avg = 2/3
+  assert.equal(m.avgFixRounds, +(2/3).toFixed(2));
+});
+
+test("clawsub eval metrics subcommand exits 0 with no log file arg", () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const result = spawnSync(
+    process.execPath,
+    [path.join(root, "bin/clawsub.mjs"), "eval", "metrics"],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, `expected exit 0, got: ${result.stderr}`);
+  assert.ok(result.stdout.includes("clawsub eval metrics"));
+});
+
+test("clawsub eval metrics --json outputs valid JSON from a log file", () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-eval-"));
+  const logFile = path.join(tmp, "loop.log");
+  fs.writeFileSync(logFile, [
+    '2026-11-01T10:00:00Z TASK CS-01 STARTED',
+    '2026-11-01T10:05:00Z TASK CS-01 APPROVE sha=abc',
+  ].join('\n'));
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(root, "bin/clawsub.mjs"), "eval", "metrics", "--log", logFile, "--json"],
+    { encoding: "utf8" }
+  );
+  assert.equal(result.status, 0, `expected exit 0, got: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.total, 1);
+  assert.equal(parsed.approved, 1);
+  assert.equal(parsed.firstPassApprovalRate, 1);
 });

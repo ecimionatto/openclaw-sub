@@ -8,3 +8,4 @@ export * from "./versions.mjs";
 export * from "./savings.mjs";
 export * from "./ubuntu-systemd.mjs";
 export * from "./loop.mjs";
+export * from "./eval.mjs";
