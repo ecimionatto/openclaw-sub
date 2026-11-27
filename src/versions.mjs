@@ -117,6 +117,7 @@ export function installSkill(opts = {}) {
 
   const targets = [
     path.join(workspace, ".claude", "skills", "clawsub", "SKILL.md"),
+    path.join(workspace, "skills", "clawsub", "SKILL.md"),
   ];
 
   if (opts.global) {

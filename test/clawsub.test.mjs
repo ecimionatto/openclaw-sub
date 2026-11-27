@@ -402,17 +402,21 @@ test("versioning, skill installer, and Ubuntu OpenClaw installer work end-to-end
   assert.equal(snap.label, "unit-test");
   assert.equal(fs.existsSync(path.join(tmpDir, "clawsub-versions.json")), true);
 
-  // 2. Skill installation into workspace (`.claude/skills/clawsub/SKILL.md`)
+  // 2. Skill installation into workspace: writes both .claude/skills and skills (ClawHub)
   const sk = installSkill({ workspace: tmpDir });
-  assert.equal(sk.installedPaths.length, 1);
-  assert.equal(sk.installedPaths[0], path.join(tmpDir, ".claude", "skills", "clawsub", "SKILL.md"));
-  assert.equal(fs.existsSync(sk.installedPaths[0]), true);
-  assert.match(fs.readFileSync(sk.installedPaths[0], "utf8"), /name:\s*clawsub/);
+  assert.equal(sk.installedPaths.length, 2);
+  const claudePath = path.join(tmpDir, ".claude", "skills", "clawsub", "SKILL.md");
+  const clawHubPath = path.join(tmpDir, "skills", "clawsub", "SKILL.md");
+  assert.ok(sk.installedPaths.includes(claudePath), ".claude/skills path must be in installedPaths");
+  assert.ok(sk.installedPaths.includes(clawHubPath), "skills path must be in installedPaths");
+  assert.equal(fs.existsSync(claudePath), true);
+  assert.equal(fs.existsSync(clawHubPath), true);
+  assert.match(fs.readFileSync(claudePath, "utf8"), /name:\s*clawsub/);
 
   // 2b. Skill installation with --global also writes ~/.openclaw/skills/clawsub/SKILL.md
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
   const skGlobal = installSkill({ workspace: tmpDir, global: true, homeDir });
-  assert.equal(skGlobal.installedPaths.length, 2);
+  assert.equal(skGlobal.installedPaths.length, 3);
   const globalPath = path.join(homeDir, ".openclaw", "skills", "clawsub", "SKILL.md");
   assert.ok(skGlobal.installedPaths.includes(globalPath), "global path must be in installedPaths");
   assert.equal(fs.existsSync(globalPath), true);
