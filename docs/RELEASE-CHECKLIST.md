@@ -7,7 +7,7 @@ Releases are **fully automated**. Every green push to `main` triggers the CD pip
 | Step | Who | How |
 |------|-----|-----|
 | Open PR with conventional commit title | Contributor | PR title drives the version bump |
-| All CI checks pass (unit × 3 nodes, Docker e2e, eval) | GitHub Actions | Runs on every PR |
+| All CI checks pass (unit × 3 nodes via `ci.yml`, Docker e2e via `e2e.yml`, eval via `ci.yml`) | GitHub Actions | Runs on every PR |
 | Merge PR to `main` | Maintainer | Squash or merge |
 | CD pipeline triggers | GitHub Actions | `.github/workflows/cd.yml` |
 | Next semver computed | `scripts/next-version.mjs` | Conventional commits since last tag |
@@ -39,7 +39,21 @@ Releases are **fully automated**. Every green push to `main` triggers the CD pip
 Add `[skip ci]` to the commit message. The CD pipeline will not run.
 
 ### Force a specific version
-Run `gh workflow run cd.yml` is not supported — versions are computed automatically. Instead, push a manual tag (`git tag v1.0.0 && git push origin v1.0.0`) before merging and the script will pick it up as the new base.
+Versions are computed automatically from conventional commits since the last tag. To force the next automated release to a specific version, push a tag at the commit you want to become the new base **before** merging:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+**Important:** this tag becomes the *base* for the next CD run. The CD pipeline will compute the next version *above* `v1.0.0` based on the commits in the merge (e.g. a `fix:` merge produces `v1.0.1`). To publish a package at exactly `v1.0.0` and skip the automated bump, tag and publish manually instead:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+npm version 1.0.0 --no-git-tag-version
+npm publish --access public
+```
+
+The CD pipeline will detect that the tag already exists and skip the commit/tag/publish steps for that run.
 
 ### Roll back a bad publish
 ```bash

@@ -1,6 +1,27 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { parseCommitType, computeBump, applyBump, nextVersion } from '../scripts/next-version.mjs';
+
+const SCRIPT = fileURLToPath(new URL('../scripts/next-version.mjs', import.meta.url));
+
+function git(cwd, ...args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`git ${args[0]}: ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+function makeRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'nv-test-'));
+  git(dir, 'init');
+  git(dir, 'config', 'user.email', 'test@example.com');
+  git(dir, 'config', 'user.name', 'Test');
+  return dir;
+}
 
 describe('parseCommitType', () => {
   it('feat: -> minor', () => assert.equal(parseCommitType('feat: add thing'), 'minor'));
@@ -50,5 +71,68 @@ describe('nextVersion', () => {
   });
   it('no commits -> patch', () => {
     assert.equal(nextVersion('0.3.0', [], false), '0.3.1');
+  });
+});
+
+describe('next-version integration (real git repo)', () => {
+  let dir;
+  before(() => {
+    dir = makeRepo();
+    writeFileSync(join(dir, 'README.md'), '');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-m', 'chore: init');
+    git(dir, 'tag', 'v0.1.0');
+  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('BREAKING CHANGE footer in body is detected by the CLI', () => {
+    git(dir, 'commit', '--allow-empty', '-m', 'fix: something\n\nBREAKING CHANGE: removed flag');
+    const r = spawnSync('node', [SCRIPT, '--current', 'v0.1.0', '--since', 'v0.1.0'], {
+      cwd: dir, encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '0.2.0');
+  });
+
+  it('since-tag range: only commits after the tag are considered', () => {
+    git(dir, 'tag', 'v0.2.0');
+    git(dir, 'commit', '--allow-empty', '-m', 'fix: small fix after tag');
+    const r = spawnSync('node', [SCRIPT, '--current', 'v0.2.0', '--since', 'v0.2.0'], {
+      cwd: dir, encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '0.2.1');
+  });
+
+  it('no-tag fallback: script exits without error and prints a semver', () => {
+    const noTagDir = makeRepo();
+    try {
+      writeFileSync(join(noTagDir, 'README.md'), '');
+      git(noTagDir, 'add', '.');
+      git(noTagDir, 'commit', '-m', 'feat: initial');
+      const r = spawnSync('node', [SCRIPT], { cwd: noTagDir, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
+    } finally {
+      rmSync(noTagDir, { recursive: true, force: true });
+    }
+  });
+
+  it('v1 tag detection: BREAKING CHANGE in body triggers major bump', () => {
+    const v1Dir = makeRepo();
+    try {
+      writeFileSync(join(v1Dir, 'README.md'), '');
+      git(v1Dir, 'add', '.');
+      git(v1Dir, 'commit', '-m', 'chore: init');
+      git(v1Dir, 'tag', 'v1.0.0');
+      git(v1Dir, 'commit', '--allow-empty', '-m', 'fix: stuff\n\nBREAKING CHANGE: dropped flag');
+      const r = spawnSync('node', [SCRIPT, '--current', 'v1.0.0', '--since', 'v1.0.0'], {
+        cwd: v1Dir, encoding: 'utf8',
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), '2.0.0');
+    } finally {
+      rmSync(v1Dir, { recursive: true, force: true });
+    }
   });
 });

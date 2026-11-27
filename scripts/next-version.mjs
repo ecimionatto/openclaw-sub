@@ -9,11 +9,12 @@
  */
 import { execSync } from 'node:child_process';
 
-export function parseCommitType(subject) {
-  const breaking = /^[a-z]+(\([^)]+\))?!:/.test(subject)
-    || /BREAKING[ -]CHANGE/.test(subject);
+export function parseCommitType(message) {
+  const firstLine = message.split('\n')[0];
+  const breaking = /^[a-z]+(\([^)]+\))?!:/.test(firstLine)
+    || /^BREAKING[ -]CHANGE:/m.test(message);
   if (breaking) return 'breaking';
-  const m = subject.match(/^([a-z]+)(\([^)]+\))?:/);
+  const m = firstLine.match(/^([a-z]+)(\([^)]+\))?:/);
   if (!m) return 'other';
   const type = m[1];
   if (type === 'feat') return 'minor';
@@ -88,8 +89,8 @@ if (process.argv[1] && process.argv[1].endsWith('next-version.mjs')) {
   const range = since ? `${since}..HEAD` : 'HEAD';
   let subjects = [];
   try {
-    const log = execSync(`git log --format=%s ${range}`, { encoding: 'utf8' });
-    subjects = log.split('\n').map(s => s.trim()).filter(Boolean);
+    const log = execSync(`git log --format=%B%x00 ${range}`, { encoding: 'utf8' });
+    subjects = log.split('\0').map(s => s.trim()).filter(Boolean);
   } catch {
     subjects = [];
   }
