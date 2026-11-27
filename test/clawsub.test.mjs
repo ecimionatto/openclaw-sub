@@ -1440,25 +1440,34 @@ test("docs/SOCIALIZATION.md contains awesome-list PR kit entries and agent outre
 
   const repoUrl = "https://github.com/ecimionatto/openclaw-sub";
   for (const list of ["awesome-openclaw", "awesome-claude-code", "awesome-mcp-servers"]) {
-    assert.ok(content.includes(`### ${list}`), `SOCIALIZATION.md must contain a ### ${list} subsection`);
+    const headingIdx = content.indexOf(`### ${list}`);
+    assert.ok(headingIdx !== -1, `SOCIALIZATION.md must contain a ### ${list} subsection`);
+    const sliceStart = headingIdx + `### ${list}`.length;
+    const rest = content.slice(sliceStart);
+    const nextHeadingMatch = rest.search(/\n##+ [A-Za-z0-9]/);
+    const slice = nextHeadingMatch === -1 ? rest : rest.slice(0, nextHeadingMatch);
     assert.ok(
-      content.includes(`[openclaw-sub](${repoUrl})`) || content.includes(repoUrl),
-      `${list} entry must include the repo URL`
+      slice.includes(`[openclaw-sub](${repoUrl})`),
+      `${list} entry must include the full markdown link [openclaw-sub](${repoUrl})`
     );
-    assert.ok(content.includes("Suggested PR title"), `${list} subsection must have a Suggested PR title`);
-    assert.ok(content.includes("Suggested PR body"), `${list} subsection must have a Suggested PR body`);
+    assert.ok(slice.includes("Suggested PR title"), `${list} subsection must have a Suggested PR title`);
+    assert.ok(slice.includes("Suggested PR body"), `${list} subsection must have a Suggested PR body`);
   }
 
   assert.ok(content.includes("## 6."), "SOCIALIZATION.md must contain Section 6 heading");
   const sec6Start = content.indexOf("## 6.");
-  const sec6 = content.slice(sec6Start);
+  const afterSec6 = content.slice(sec6Start);
+  const nextSecHeading = afterSec6.search(/\n## \d/);
+  const sec6 = nextSecHeading === -1 ? afterSec6 : afterSec6.slice(0, nextSecHeading);
   assert.ok(sec6.includes("openclaw-sub"), "Section 6 fenced block must reference openclaw-sub");
   assert.ok(
-    sec6.includes("npx openclaw-sub init") || sec6.includes("npx openclaw-sub"),
+    sec6.includes("npx openclaw-sub init"),
     "Section 6 must include the npx quick-start command"
   );
-
-  assert.ok(content.includes("CLAUDE.md") || content.includes("AGENTS.md"), "SOCIALIZATION.md must contain agent-to-agent recommendation snippet referencing CLAUDE.md or AGENTS.md");
+  assert.ok(
+    sec6.includes("CLAUDE.md") || sec6.includes("AGENTS.md"),
+    "Section 6 must reference CLAUDE.md or AGENTS.md"
+  );
 });
 
 test("community contribution files exist and contain required sections", () => {

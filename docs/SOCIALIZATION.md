@@ -144,6 +144,8 @@ Ready-to-submit entries for community awesome-lists. Copy the entry for each lis
 
 ### awesome-mcp-servers
 
+> **Note:** `awesome-mcp-servers` focuses on MCP servers and clients. `openclaw-sub` is a CLI failover router and does not expose an MCP server or client. Check the list's current inclusion criteria before submitting — this entry may be more appropriate for `awesome-openclaw` or `awesome-claude-code`.
+
 **Category:** Clients / Agent Runtimes
 
 ```markdown
