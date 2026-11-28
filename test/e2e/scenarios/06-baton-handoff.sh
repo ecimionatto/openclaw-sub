@@ -39,6 +39,7 @@ node -e "const d=JSON.parse(require('fs').readFileSync('$BATON','utf8'));
 export STUB_CLAUDE_MODE=ok
 export STUB_CODEX_MODE=ok
 export STUB_AGY_MODE=ok
+"$CLAWSUB" reset 2>&1 || fail "reset before provider recovery failed"
 "$CLAWSUB" run --session myws "third turn" >/dev/null 2>&1 || fail "third run failed"
 
 node -e "const d=JSON.parse(require('fs').readFileSync('$BATON','utf8'));
