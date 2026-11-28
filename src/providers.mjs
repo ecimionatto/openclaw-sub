@@ -206,21 +206,7 @@ export function detectBinary(binary) {
 export function inspectProvider(providerId, opts = {}) {
   const provider = PROVIDERS[providerId];
   if (!provider) {
-    return {
-      id: providerId,
-      name: providerId,
-      subscription: "unknown",
-      installed: false,
-      binary: providerId,
-      version: null,
-      authenticated: false,
-      authDetail: "Unknown provider",
-      headlessSafe: false,
-      headlessDetail: "Unknown provider",
-      warnings: [],
-      installHint: `Unknown provider "${providerId}" — not supported`,
-      loginHint: "N/A",
-    };
+    throw new Error(`Unknown provider: ${providerId}`);
   }
   let binInfo = detectBinary(provider.binary);
   if (!binInfo.installed && provider.altBinary) {

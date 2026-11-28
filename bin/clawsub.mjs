@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import path from "node:path";
 import {
   getSessionBaton,
   loadBatonStore,
@@ -15,6 +14,7 @@ import {
   getProviderCooldown,
   loadConfig,
   loadState,
+  normalizeChain,
   saveConfig,
   saveState,
 } from "../src/state.mjs";
@@ -38,7 +38,7 @@ Usage:
   clawsub loop init [--workspace <path>] [--dry-run] [--force]
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
-  clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
+  clawsub install-systemd [--enable] [--migrate] [--dry-run]
   clawsub install-skill [--workspace <path>] [--global]
   clawsub version [--json]
   clawsub status [--json]
@@ -50,7 +50,6 @@ Usage:
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
-  clawsub uninstall [--dry-run]
   clawsub reset [provider]
   clawsub help
 
@@ -103,13 +102,34 @@ function readStdinIfPiped() {
 
 function cmdInit(flags) {
   const stateDir = getDefaultStateDir();
-  const existing = loadConfig(stateDir);
-  const requestedChain = flags.chain
+  let existing;
+  try {
+    existing = loadConfig(stateDir);
+  } catch (err) {
+    if (!flags.chain) {
+      console.error(`Error loading existing config: ${err.message}`);
+      process.exit(1);
+    }
+    console.warn(`Warning: existing config invalid (${err.message}); workspace and other saved settings may not be preserved`);
+    existing = {};
+  }
+  const rawChain = flags.chain
     ? String(flags.chain)
         .split(",")
-        .map((s) => s.trim().toLowerCase())
+        .map((s) => s.trim())
         .filter(Boolean)
-    : existing.chain || ["claude", "codex", "agy"];
+    : existing.chainEntries || existing.chain || ["claude", "codex", "agy"];
+  const failover = flags["no-failover"] ? false : flags["failover"] ? true : (existing.failover !== undefined ? existing.failover : true);
+
+  let normalized;
+  try {
+    normalized = normalizeChain({ chain: rawChain, failover });
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+  const requestedChain = normalized.chain;
+  const chainProviderIds = requestedChain.map((e) => e.provider);
 
   const workspace = flags.workspace || existing.workspace || process.cwd();
   const openclawVersion = flags["openclaw-version"] || "latest";
@@ -140,7 +160,7 @@ function cmdInit(flags) {
   }
 
   console.log("\n[2/5] Scanning Subscription CLIs...");
-  const inspected = requestedChain.map((id) => inspectProvider(id));
+  const inspected = chainProviderIds.map((id) => inspectProvider(id));
   for (const p of inspected) {
     const binBadge = p.installed ? "✓" : "✗";
     const authBadge = p.authenticated ? "logged in" : "needs login";
@@ -152,39 +172,26 @@ function cmdInit(flags) {
   }
 
   const readyCount = inspected.filter((p) => p.installed && p.authenticated).length;
-  if (readyCount === 1 && !requestedChain.includes("agy") && !requestedChain.includes("ollama")) {
+  if (readyCount === 1 && !chainProviderIds.includes("agy") && !chainProviderIds.includes("ollama")) {
     console.log(
       "\n  💡 Tip: You have 1 paid subscription CLI configured. Add `agy` (Google Gemini/Antigravity free tier) or `ollama` via `--chain claude,agy` for automatic $0 failover when your 5-hour quota window hits."
     );
   }
 
   console.log("\n[3/5] Writing Subscription-Saver Config, Cooldown Shims & Version Snapshot...");
-  const clawsubJsonPath = path.join(stateDir, "clawsub.json");
-  if (fs.existsSync(clawsubJsonPath)) {
-    fs.copyFileSync(clawsubJsonPath, `${clawsubJsonPath}.bak.${Date.now()}`);
-  }
+  const { chainEntries: _ce, ...existingClean } = existing;
   const saved = saveConfig(
     {
-      ...existing,
+      ...existingClean,
       chain: requestedChain,
+      failover: normalized.failover,
       workspace,
     },
     stateDir
   );
-
-  const unknownProviders = requestedChain.filter((id) => !PROVIDERS[id]);
-  if (unknownProviders.length > 0) {
-    console.warn(`  ⚠ Unknown provider(s): ${unknownProviders.join(", ")} — will be skipped during routing`);
-  }
-
-  const openclawJsonPath = path.join(stateDir, "openclaw.json");
-  if (fs.existsSync(openclawJsonPath)) {
-    fs.copyFileSync(openclawJsonPath, `${openclawJsonPath}.bak.${Date.now()}`);
-  }
-
   const integration = generateOpenClawIntegration({
     stateDir,
-    chain: saved.chain,
+    chain: saved.chain.map((e) => (typeof e === "string" ? e : e.provider)),
     workspace: saved.workspace,
   });
   const snap = recordVersionSnapshot(stateDir, "init");
@@ -209,7 +216,7 @@ function cmdInit(flags) {
 
   if (flags.probe) {
     console.log("\n[5/5] Running Live Verification Probes...");
-    cmdTest({ chain: requestedChain.join(",") });
+    cmdTest({ chain: requestedChain.map((e) => e.key).join(",") });
   } else {
     console.log("\n[5/5] Next Steps:");
     console.log("  • Run `clawsub test` to verify DIRECT_OK / FALLBACK_OK across your CLIs.");
@@ -254,22 +261,36 @@ function cmdInstallUbuntu(flags) {
 }
 
 function cmdInstallSystemd(flags) {
-  if (flags.workspace === true) {
-    console.error("Error: --workspace requires a path argument");
-    process.exit(1);
-  }
-  const stateDir = getDefaultStateDir();
-  const config = loadConfig(stateDir);
-  const workspace = flags.workspace || config.workspace || process.cwd();
   const dryRun = Boolean(flags["dry-run"]);
   const enable = Boolean(flags.enable);
+  const migrate = Boolean(flags.migrate);
 
-  const res = installSystemdService({ workspace, dryRun, enable });
+  const res = installSystemdService({ dryRun, enable, migrate });
+
+  for (const w of res.warnings || []) {
+    console.warn(`⚠ ${w}`);
+  }
+
+  if (res.gatewayServiceMissing) {
+    console.error(`✗ ${res.message}`);
+    process.exit(1);
+  }
+
+  if (res.legacyServiceExists && !migrate) {
+    console.warn(`⚠ Legacy openclaw-sub.service detected at ${res.legacyServicePath}`);
+    console.warn("  Run with --migrate to disable it and avoid port 18789 conflicts.");
+  }
 
   if (dryRun) {
-    console.log("🦞 clawsub install-systemd (dry-run)\n");
-    console.log(`Service file: ${res.servicePath}\n`);
+    console.log("clawsub install-systemd (dry-run)\n");
+    console.log(`Drop-in file: ${res.servicePath}\n`);
     console.log(res.content);
+    if (migrate && res.legacyServiceExists) {
+      console.log(`Legacy openclaw-sub.service detected at: ${res.legacyServicePath}`);
+      console.log("Commands that would run to migrate:");
+      console.log("  $ systemctl --user disable openclaw-sub");
+      console.log("  $ systemctl --user stop openclaw-sub");
+    }
     console.log("Run these commands after writing the file:");
     for (const cmd of res.lingerInstructions) {
       console.log(`  $ ${cmd}`);
@@ -277,15 +298,24 @@ function cmdInstallSystemd(flags) {
     return;
   }
 
-  console.log(`✓ Wrote systemd user service: ${res.servicePath}\n`);
+  console.log(`✓ Wrote drop-in conf: ${res.servicePath}\n`);
 
   if (enable && res.enableResult) {
     if (res.enableResult.reloaded) console.log("✓ systemctl --user daemon-reload succeeded");
-    if (res.enableResult.enabled) console.log("✓ systemctl --user enable openclaw-sub succeeded");
+    if (res.enableResult.restarted) console.log("✓ systemctl --user restart openclaw-gateway succeeded");
     for (const err of res.enableResult.errors) {
       console.error(`✗ ${err}`);
     }
     if (res.enableResult.errors.length > 0) process.exitCode = 1;
+  }
+
+  if (migrate && res.migrateResult) {
+    if (res.migrateResult.disabled) console.log("✓ systemctl --user disable openclaw-sub succeeded");
+    if (res.migrateResult.stopped) console.log("✓ systemctl --user stop openclaw-sub succeeded");
+    for (const err of res.migrateResult.errors) {
+      console.error(`✗ ${err}`);
+    }
+    if (res.migrateResult.errors.length > 0) process.exitCode = 1;
   }
 
   console.log("To complete setup and survive reboots and SSH disconnects, run:");
@@ -336,13 +366,17 @@ function cmdStatus(flags) {
   const state = loadState(stateDir);
   const now = new Date();
 
-  const rows = (config.chain || []).map((id, idx) => {
+  const rows = (config.chainEntries || config.chain || []).map((entry, idx) => {
+    const id = typeof entry === "string" ? entry : entry.provider;
+    const entryKey = typeof entry === "string" ? entry : entry.key;
     const info = inspectProvider(id);
     const cd = getProviderCooldown(state, id, now);
     const pState = state.providers?.[id] || {};
     return {
       role: idx === 0 ? "primary" : `fallback-#${idx}`,
       id,
+      key: entryKey,
+      optional: typeof entry === "object" ? entry.optional : false,
       name: info.name,
       subscription: info.subscription,
       version: info.version,
@@ -362,7 +396,8 @@ function cmdStatus(flags) {
       JSON.stringify(
         {
           clawsubVersion: CLAWSUB_VERSION,
-          chain: config.chain,
+          chain: config.chainEntries || config.chain,
+          failover: config.failover !== undefined ? config.failover : true,
           workspace: config.workspace,
           lastActiveProvider: state.lastActiveProvider,
           quietWindows: config.quietWindows,
@@ -377,7 +412,7 @@ function cmdStatus(flags) {
   }
 
   console.log(`🦞 clawsub status (v${CLAWSUB_VERSION})\n`);
-  console.log(`Chain:               ${(config.chain || []).join(" -> ")}`);
+  console.log(`Chain:               ${(config.chainEntries || config.chain || []).map((e) => (typeof e === "string" ? e : e.key)).join(" -> ")}`);
   console.log(`Workspace:           ${config.workspace}`);
   console.log(`Last Active CLI:     ${state.lastActiveProvider || "(none yet)"}`);
   console.log(`Quiet Windows:       ${(config.quietWindows || []).join(", ") || "none"}`);
@@ -425,7 +460,7 @@ function cmdDoctor(flags) {
   }
 
   if (report.ok) {
-    console.log("\n✅ All checks passed — system healthy!");
+    console.log("\n✅ All checks passed!");
   } else {
     process.exitCode = 1;
   }
@@ -434,12 +469,18 @@ function cmdDoctor(flags) {
 function cmdTest(flags) {
   const stateDir = getDefaultStateDir();
   const config = loadConfig(stateDir);
-  const chain = flags.chain
-    ? String(flags.chain)
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
-    : config.chain || ["claude", "codex", "agy"];
+  let chain;
+  if (flags.chain) {
+    const rawEntries = String(flags.chain).split(",").map((s) => s.trim()).filter(Boolean);
+    try {
+      chain = normalizeChain({ chain: rawEntries }).chain.map((e) => e.provider);
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    chain = (config.chain || ["claude", "codex", "agy"]).map((e) => (typeof e === "string" ? e : e.provider));
+  }
 
   console.log(`🧪 Testing subscription CLI chain: ${chain.join(" -> ")}\n`);
   for (let i = 0; i < chain.length; i++) {
@@ -460,43 +501,6 @@ function cmdTest(flags) {
     } else {
       console.log(`  ✗ [${id}] probe failed: ${res.output.slice(0, 160)}`);
     }
-  }
-}
-
-function cmdUninstall(flags) {
-  const stateDir = getDefaultStateDir();
-  const dryRun = Boolean(flags["dry-run"]);
-
-  const openclawJsonPath = path.join(stateDir, "openclaw.json");
-  const backups = fs.existsSync(stateDir)
-    ? fs.readdirSync(stateDir)
-        .filter((f) => f.startsWith("openclaw.json.bak."))
-        .sort()
-    : [];
-
-  if (backups.length === 0) {
-    console.error("✗ No openclaw.json backup found — nothing to restore");
-    process.exit(1);
-  }
-
-  const latestBackup = path.join(stateDir, backups[backups.length - 1]);
-
-  if (dryRun) {
-    console.log(`🦞 clawsub uninstall (dry-run)\nWould restore: ${latestBackup} → ${openclawJsonPath}`);
-    return;
-  }
-
-  fs.copyFileSync(latestBackup, openclawJsonPath);
-  console.log(`✓ Restored openclaw.json from ${latestBackup}`);
-
-  const binDir = path.join(stateDir, "bin");
-  if (fs.existsSync(binDir)) {
-    for (const f of fs.readdirSync(binDir)) {
-      if (f.startsWith("clawsub-")) {
-        fs.rmSync(path.join(binDir, f));
-      }
-    }
-    console.log("✓ Removed clawsub shims");
   }
 }
 
@@ -685,11 +689,6 @@ function main() {
     return;
   }
 
-  if (subcmd === "uninstall") {
-    cmdUninstall(flags);
-    return;
-  }
-
   if (subcmd === "reset") {
     cmdReset(positional[1]);
     return;
@@ -740,12 +739,6 @@ function main() {
     }
     const sessionKey = typeof flags.session === "string" ? flags.session : "main";
     const res = routePrompt(prompt, { sessionKey });
-    const authExpiredProviders = (res.attempts || []).filter((a) => a.status === "auth_expired");
-    for (const a of authExpiredProviders) {
-      process.stderr.write(
-        `[clawsub] ${a.provider}: auth expired — run \`${a.remediation || `openclaw models auth login --provider ${a.provider} --force`}\` to re-authenticate\n`
-      );
-    }
     console.log(res.output);
     process.exit(res.ok ? 0 : 1);
   }

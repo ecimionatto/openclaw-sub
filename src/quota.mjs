@@ -5,7 +5,6 @@
 
 export const LIMIT_PATTERNS = [
   /usage_limit_reached/i,
-  /usage limit reached/i,
   /hit your (?:5-hour|weekly|daily|monthly|session|usage) limit/i,
   /You[’']ve hit your (?:usage|session|weekly|daily|monthly|5-hour|Opus|Sonnet|model) limit/i,
   /rate_limit_error/i,
@@ -157,25 +156,6 @@ export function parseResetTime(output, now = new Date()) {
         candidate.setFullYear(candidate.getFullYear() + 1);
       }
       return candidate;
-    }
-  }
-
-  // 2d. Claude weekly limit: "will reset on Wednesday, Dec 2, 2026 at 12:00 AM UTC"
-  const claudeWeeklyMatch = output.match(
-    /will reset on\s+\w+,\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*([AP]M)\s*UTC/i
-  );
-  if (claudeWeeklyMatch) {
-    const monthIdx = MONTHS[claudeWeeklyMatch[1].toLowerCase()];
-    if (monthIdx !== undefined) {
-      const day = Number.parseInt(claudeWeeklyMatch[2], 10);
-      const year = Number.parseInt(claudeWeeklyMatch[3], 10);
-      let hour = Number.parseInt(claudeWeeklyMatch[4], 10);
-      const minute = Number.parseInt(claudeWeeklyMatch[5], 10);
-      const meridiem = claudeWeeklyMatch[6].toUpperCase();
-      if (meridiem === "PM" && hour < 12) hour += 12;
-      if (meridiem === "AM" && hour === 12) hour = 0;
-      const d = new Date(Date.UTC(year, monthIdx, day, hour, minute, 0));
-      if (!Number.isNaN(d.getTime())) return d;
     }
   }
 

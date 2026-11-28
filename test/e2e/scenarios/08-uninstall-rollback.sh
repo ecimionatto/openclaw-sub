@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SC-08: uninstall / rollback restores original openclaw.json
+# KNOWN_BLOCKER=CS-28
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
 fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }

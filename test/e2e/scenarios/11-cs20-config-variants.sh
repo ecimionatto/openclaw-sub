@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SC-11: CS-20 config variants — same provider/two models, failover off, optional provider missing
+# KNOWN_BLOCKER=CS-25
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
 fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }

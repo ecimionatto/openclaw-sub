@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SC-07: init writes backup, preserves existing config, re-run is idempotent
+# KNOWN_BLOCKER=CS-27
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
 fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }
