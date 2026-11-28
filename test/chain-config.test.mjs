@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { normalizeChain, KNOWN_PROVIDERS } from "../src/state.mjs";
+import { normalizeChain, KNOWN_PROVIDERS, loadConfig } from "../src/state.mjs";
 
 test("KNOWN_PROVIDERS contains expected provider ids", () => {
   assert.ok(Array.isArray(KNOWN_PROVIDERS));
@@ -83,7 +86,7 @@ test("normalizeChain: throws on empty chain", () => {
 });
 
 test("normalizeChain: throws on missing chain", () => {
-  assert.throws(() => normalizeChain({}), /empty/i);
+  assert.throws(() => normalizeChain({}), /must be an array/i);
 });
 
 test("normalizeChain: throws on unknown provider string", () => {
@@ -116,4 +119,68 @@ test("normalizeChain: preserves other config fields", () => {
   const result = normalizeChain({ chain: ["claude"], workspace: "/tmp/work", defaultCooldownMinutes: 30 });
   assert.equal(result.workspace, "/tmp/work");
   assert.equal(result.defaultCooldownMinutes, 30);
+});
+
+test("normalizeChain: throws on non-array chain", () => {
+  assert.throws(() => normalizeChain({ chain: "claude" }), /must be an array/i);
+});
+
+test("normalizeChain: throws on string failover value", () => {
+  assert.throws(() => normalizeChain({ chain: ["claude"], failover: "false" }), /failover must be a boolean/i);
+});
+
+test("normalizeChain: throws on empty model in string entry", () => {
+  assert.throws(() => normalizeChain({ chain: ["claude:"] }), /empty model/i);
+});
+
+test("normalizeChain: throws on object entry with optional as string", () => {
+  assert.throws(
+    () => normalizeChain({ chain: [{ provider: "claude", optional: "false" }] }),
+    /"optional" must be a boolean/i
+  );
+});
+
+test("normalizeChain: throws on object entry with non-array args", () => {
+  assert.throws(
+    () => normalizeChain({ chain: [{ provider: "claude", args: "--verbose" }] }),
+    /"args" must be an array/i
+  );
+});
+
+test("normalizeChain: provider part is lowercased, model case preserved", () => {
+  const result = normalizeChain({ chain: ["Claude:MyTag"] });
+  assert.equal(result.chain[0].provider, "claude");
+  assert.equal(result.chain[0].model, "MyTag");
+});
+
+test("loadConfig: throws on unknown provider in saved config", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: ["claude", "badprovider"] }),
+      "utf8"
+    );
+    assert.throws(() => loadConfig(path.join(tmpDir, "claw")), /unknown provider/i);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: returns valid string chain on success", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: ["claude", "codex"] }),
+      "utf8"
+    );
+    const config = loadConfig(path.join(tmpDir, "claw"));
+    assert.deepEqual(config.chain, ["claude", "codex"]);
+    assert.equal(config.failover, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

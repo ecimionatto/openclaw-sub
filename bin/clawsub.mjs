@@ -106,10 +106,10 @@ function cmdInit(flags) {
   const rawChain = flags.chain
     ? String(flags.chain)
         .split(",")
-        .map((s) => s.trim().toLowerCase())
+        .map((s) => s.trim())
         .filter(Boolean)
     : existing.chain || ["claude", "codex", "agy"];
-  const failover = flags["no-failover"] ? false : (existing.failover !== undefined ? existing.failover : true);
+  const failover = flags["no-failover"] ? false : flags["failover"] ? true : (existing.failover !== undefined ? existing.failover : true);
 
   let normalized;
   try {
@@ -172,7 +172,7 @@ function cmdInit(flags) {
   const saved = saveConfig(
     {
       ...existing,
-      chain: requestedChain,
+      chain: chainProviderIds,
       failover: normalized.failover,
       workspace,
     },
@@ -180,7 +180,7 @@ function cmdInit(flags) {
   );
   const integration = generateOpenClawIntegration({
     stateDir,
-    chain: saved.chain.map((e) => (typeof e === "string" ? e : e.provider)),
+    chain: saved.chain,
     workspace: saved.workspace,
   });
   const snap = recordVersionSnapshot(stateDir, "init");
@@ -435,13 +435,18 @@ function cmdDoctor(flags) {
 function cmdTest(flags) {
   const stateDir = getDefaultStateDir();
   const config = loadConfig(stateDir);
-  const rawTestChain = flags.chain
-    ? String(flags.chain)
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
-    : config.chain || ["claude", "codex", "agy"];
-  const chain = rawTestChain.map((e) => (typeof e === "string" ? e : e.provider));
+  let chain;
+  if (flags.chain) {
+    const rawEntries = String(flags.chain).split(",").map((s) => s.trim()).filter(Boolean);
+    try {
+      chain = normalizeChain({ chain: rawEntries }).chain.map((e) => e.provider);
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    chain = config.chain || ["claude", "codex", "agy"];
+  }
 
   console.log(`🧪 Testing subscription CLI chain: ${chain.join(" -> ")}\n`);
   for (let i = 0; i < chain.length; i++) {

@@ -10,13 +10,31 @@ function normalizeEntry(raw) {
     const optional = str.endsWith("?");
     if (optional) str = str.slice(0, -1);
     const colonIdx = str.indexOf(":");
-    const provider = colonIdx >= 0 ? str.slice(0, colonIdx) : str;
+    const provider = (colonIdx >= 0 ? str.slice(0, colonIdx) : str).toLowerCase();
     const model = colonIdx >= 0 ? str.slice(colonIdx + 1) : undefined;
+    if (model !== undefined && model === "") {
+      throw new Error(`Empty model in entry "${raw.trim()}"`);
+    }
     const key = model ? `${provider}:${model}` : provider;
     return { key, provider, model, optional, failover: undefined, args: undefined };
   }
   if (typeof raw === "object" && raw !== null) {
     const { provider, model, optional = false, failover, args } = raw;
+    if (typeof provider !== "string" || provider === "") {
+      throw new Error(`Entry "provider" must be a non-empty string, got ${JSON.stringify(provider)}`);
+    }
+    if (model !== undefined && (typeof model !== "string" || model === "")) {
+      throw new Error(`Entry "model" must be a non-empty string or absent, got ${JSON.stringify(model)}`);
+    }
+    if (typeof optional !== "boolean") {
+      throw new Error(`Entry "optional" must be a boolean, got ${JSON.stringify(optional)}`);
+    }
+    if (failover !== undefined && typeof failover !== "boolean") {
+      throw new Error(`Entry "failover" must be a boolean or absent, got ${JSON.stringify(failover)}`);
+    }
+    if (args !== undefined && !Array.isArray(args)) {
+      throw new Error(`Entry "args" must be an array or absent, got ${JSON.stringify(args)}`);
+    }
     const key = model ? `${provider}:${model}` : provider;
     return { key, provider, model, optional, failover, args };
   }
@@ -24,12 +42,19 @@ function normalizeEntry(raw) {
 }
 
 export function normalizeChain(config) {
-  const rawChain = config.chain || [];
-  const failover = config.failover !== undefined ? Boolean(config.failover) : true;
-
+  const rawChain = config.chain;
+  if (!Array.isArray(rawChain)) {
+    throw new Error(`chain must be an array, got ${typeof rawChain}`);
+  }
   if (rawChain.length === 0) {
     throw new Error("chain must not be empty");
   }
+
+  const rawFailover = config.failover;
+  if (rawFailover !== undefined && typeof rawFailover !== "boolean") {
+    throw new Error(`failover must be a boolean, got ${typeof rawFailover} (${JSON.stringify(rawFailover)})`);
+  }
+  const failover = rawFailover !== undefined ? rawFailover : true;
 
   const entries = rawChain.map((raw, i) => {
     const entry = normalizeEntry(raw);
@@ -76,12 +101,18 @@ export function getStatePath(stateDir = getDefaultStateDir()) {
 
 export function loadConfig(stateDir = getDefaultStateDir()) {
   const file = getConfigPath(stateDir);
+  let raw;
   try {
-    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-    return { ...DEFAULT_CONFIG, ...raw };
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
     return { ...DEFAULT_CONFIG };
   }
+  const merged = { ...DEFAULT_CONFIG, ...raw };
+  if (merged.chain && merged.chain.length > 0) {
+    const validated = normalizeChain(merged);
+    return { ...merged, chain: validated.chain.map((e) => e.provider), failover: validated.failover };
+  }
+  return merged;
 }
 
 export function saveConfig(config, stateDir = getDefaultStateDir()) {
