@@ -19,3 +19,13 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm test
       - run: node ./bin/clawsub.mjs help
+
+  eval:
+    name: CS-18 eval scenarios
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test test/eval.test.mjs

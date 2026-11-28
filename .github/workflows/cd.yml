@@ -1,0 +1,229 @@
+name: CD — Continuous Delivery
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. Gate: unit tests ───────────────────────────────────────────────────
+  unit:
+    name: Unit tests (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+      - run: node ./bin/clawsub.mjs help
+
+  # ── 2. Gate: Docker e2e ───────────────────────────────────────────────────
+  docker-e2e:
+    name: Docker e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run e2e in Docker
+        run: |
+          docker build -f test/e2e/Dockerfile -t clawsub-e2e .
+          docker run --rm clawsub-e2e
+
+  # ── 3. Gate: CS-18 eval scenarios ────────────────────────────────────────
+  eval:
+    name: CS-18 eval scenarios
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test test/eval.test.mjs
+
+  # ── 4. Release: tag + GitHub Release + npm publish --tag next ─────────────
+  release:
+    name: Tag & Release
+    needs: [unit, docker-e2e, eval]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Serialize releases so only one runs at a time; in-progress run always
+    # finishes before a queued run starts.
+    concurrency:
+      group: cd-main
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.guard.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Release guard
+        id: guard
+        run: |
+          # If this exact SHA already has a tag, a prior run pushed the tag but may have
+          # failed before finishing the release or publish — resume with skip=false so the
+          # idempotency checks in later steps can complete the work.
+          EXACT_TAG=$(git tag --points-at "$GITHUB_SHA" --list 'v*' | head -1)
+          if [ -n "$EXACT_TAG" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_SHA already tagged as $EXACT_TAG — resuming partial release"
+            exit 0
+          fi
+
+          # If a descendant commit already carries a v* tag, this SHA was superseded; skip.
+          DESCENDANT_TAG=$(git tag --contains "$GITHUB_SHA" --list 'v*' | head -1)
+          if [ -n "$DESCENDANT_TAG" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_SHA is an ancestor of $DESCENDANT_TAG — skipping superseded release"
+            exit 0
+          fi
+
+          # If origin/main has moved past this SHA a newer merge beat us; skip.
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::origin/main has moved past $GITHUB_SHA — skipping superseded release"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        id: version
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          # If a prior run already pushed the tag, reuse its version instead of recomputing.
+          RESUME_TAG=$(git tag --points-at "$GITHUB_SHA" --list 'v*' | head -1)
+          if [ -n "$RESUME_TAG" ]; then
+            VERSION="${RESUME_TAG#v}"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "Resuming partial release with existing version: $VERSION"
+            exit 0
+          fi
+          SINCE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$SINCE" ]; then
+            VERSION=$(node scripts/next-version.mjs --current "$SINCE" --since "$SINCE")
+          else
+            CURRENT=$(node -e "process.stdout.write(require('./package.json').version)")
+            VERSION=$(node scripts/next-version.mjs --current "$CURRENT")
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Next version: $VERSION"
+
+      - name: Tag tested SHA and push
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            EXISTING_SHA=$(git rev-list -1 "$TAG")
+            if [ "$EXISTING_SHA" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $TAG already exists on $EXISTING_SHA (not $GITHUB_SHA) — version collision"
+              exit 1
+            fi
+            echo "Tag $TAG already exists on this SHA — skipping tag push"
+          else
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "$TAG"
+          fi
+
+      - name: Set package.json version for publish
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            p.version = '${{ steps.version.outputs.version }}';
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          "
+
+      - name: Create GitHub Release
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping"
+          else
+            gh release create "$TAG" \
+              --generate-notes \
+              scripts/install-ubuntu.sh \
+              skills/clawsub/SKILL.md
+          fi
+
+      - name: Publish to npm --tag next
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::notice::NPM_TOKEN secret not set — skipping npm publish"
+          else
+            VERSION="${{ steps.version.outputs.version }}"
+            if npm view "openclaw-sub@$VERSION" version >/dev/null 2>&1; then
+              echo "Version $VERSION already published — skipping"
+            else
+              npm publish --tag next --access public
+            fi
+          fi
+
+  # ── 5. Promote: dist-tag latest (gated by production environment) ─────────
+  promote:
+    name: Promote to latest
+    needs: release
+    runs-on: ubuntu-latest
+    environment: production
+    if: needs.release.outputs.skip != 'true'
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Promote next -> latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::notice::NPM_TOKEN secret not set — skipping dist-tag promotion"
+          else
+            VERSION="${{ needs.release.outputs.version }}"
+            NPM_VIEW_OUT=$(npm view openclaw-sub dist-tags.latest 2>&1); NPM_VIEW_EXIT=$?
+            if [ $NPM_VIEW_EXIT -eq 0 ]; then
+              CURRENT_LATEST="$NPM_VIEW_OUT"
+            elif echo "$NPM_VIEW_OUT" | grep -qE 'E404|not in the npm registry'; then
+              CURRENT_LATEST="0.0.0"
+            else
+              echo "::error::npm registry lookup failed: $NPM_VIEW_OUT"
+              exit 1
+            fi
+            # Skip if latest is already >= VERSION to prevent rolling back a newer release.
+            SHOULD_PROMOTE=$(node -e "
+              const v = s => s.replace(/^v/,'').split('.').map(Number);
+              const a = v('$CURRENT_LATEST');
+              const b = v('$VERSION');
+              const cmp = a[0]!==b[0] ? a[0]-b[0] : a[1]!==b[1] ? a[1]-b[1] : a[2]-b[2];
+              process.stdout.write(cmp < 0 ? 'yes' : 'no');
+            ")
+            if [ "$SHOULD_PROMOTE" = "yes" ]; then
+              npm dist-tag add "openclaw-sub@$VERSION" latest
+              echo "Promoted openclaw-sub@$VERSION to latest"
+            else
+              echo "::notice::Skipping promotion: latest ($CURRENT_LATEST) is already >= $VERSION"
+            fi
+          fi
