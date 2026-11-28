@@ -3,6 +3,7 @@
 case "$1" in
   --version) echo "1.0.0-stub"; exit 0 ;;
   *)
+    [ -n "${STUB_INVOCATION_LOG:-}" ] && printf "codex %s\n" "$*" >> "$STUB_INVOCATION_LOG"
     case "${STUB_CODEX_MODE:-ok}" in
       limit)        echo "Usage limit reached. Try again at 1:00 AM." >&2; exit 1 ;;
       auth_expired) echo "Invalid API key or token expired. Please run 'codex auth' to re-authenticate." >&2; exit 1 ;;

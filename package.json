@@ -33,7 +33,8 @@
     "test:e2e": "bash test/e2e/run.sh",
     "status": "node ./bin/clawsub.mjs status",
     "doctor": "node ./bin/clawsub.mjs doctor",
-    "version-check": "node ./bin/clawsub.mjs version"
+    "version-check": "node ./bin/clawsub.mjs version",
+    "gate:v1": "bash scripts/gate-v1.sh"
   },
   "keywords": [
     "openclaw",

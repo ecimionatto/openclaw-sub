@@ -36,3 +36,17 @@ jobs:
         run: bash test/e2e/run.sh
       - name: Run scenario matrix
         run: bash test/e2e/scenarios/run-all.sh
+
+  v1-gate:
+    name: v1 gate (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Make stubs executable
+        run: chmod +x test/e2e/stubs/claude test/e2e/stubs/codex test/e2e/stubs/agy test/e2e/stubs/openclaw test/e2e/run.sh test/e2e/scenarios/run-all.sh test/e2e/scenarios/*.sh scripts/gate-v1.sh
+      - name: Run v1 gate
+        run: npm run gate:v1
