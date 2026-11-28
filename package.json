@@ -17,11 +17,13 @@
     "skills/",
     "scripts/",
     "docs/",
+    "evals/",
     "loop-pack/",
     ".well-known/",
     "llms.txt",
     "llms-full.txt",
     "SKILL.md",
+    "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -59,5 +61,10 @@
   "homepage": "https://github.com/ecimionatto/openclaw-sub#readme",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/plugin.mjs"
+    ]
   }
 }

@@ -1,0 +1,229 @@
+import { detectBinary, PROVIDERS } from "./providers.mjs";
+
+export const PLUGIN_NAME = "openclaw-sub";
+
+export function normalizeAgyUsage(raw) {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const usage = {};
+  if (typeof raw.input_tokens === "number" && Number.isFinite(raw.input_tokens)) {
+    usage.input = raw.input_tokens;
+  }
+  if (typeof raw.output_tokens === "number" && Number.isFinite(raw.output_tokens)) {
+    usage.output = raw.output_tokens;
+  }
+  const cacheRead = raw.cache_read_tokens ?? raw.cached;
+  if (typeof cacheRead === "number" && Number.isFinite(cacheRead)) {
+    usage.cacheRead = cacheRead;
+  }
+  if (typeof raw.total_tokens === "number" && Number.isFinite(raw.total_tokens)) {
+    usage.total = raw.total_tokens;
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+export function parseAgyJsonlEvent(line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || typeof parsed.event !== "string") {
+    return null;
+  }
+
+  if (parsed.event === "init") {
+    const sessionId =
+      typeof parsed.conversation_id === "string" ? parsed.conversation_id.trim() : "";
+    return sessionId ? { kind: "sessionId", sessionId } : [];
+  }
+
+  if (parsed.event === "step_update") {
+    const update = parsed.step_update;
+    if (!update || typeof update !== "object") {
+      return [];
+    }
+    const events = [];
+    const sessionId =
+      typeof update.conversation_id === "string" ? update.conversation_id.trim() : "";
+    if (sessionId) {
+      events.push({ kind: "sessionId", sessionId });
+    }
+    if (update.step_type === "agent_response") {
+      if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
+        events.push({ kind: "text", text: update.text_delta });
+      }
+    }
+    return events;
+  }
+
+  if (parsed.event === "result") {
+    const res = parsed.result && typeof parsed.result === "object" ? parsed.result : {};
+    const sessionId =
+      (typeof res.conversation_id === "string" && res.conversation_id.trim()) ||
+      (typeof parsed.conversation_id === "string" && parsed.conversation_id.trim()) ||
+      undefined;
+    const usage = normalizeAgyUsage(res.usage);
+    const status = typeof res.status === "string" ? res.status.trim() : "";
+    const explicitError = typeof res.error === "string" ? res.error.trim() : "";
+    const isFailure = Boolean(explicitError) || (Boolean(status) && status !== "SUCCESS");
+    const errorText = isFailure
+      ? explicitError || `Antigravity CLI ended with status ${status || "ERROR"}.`
+      : undefined;
+    const text = !errorText && typeof res.response === "string" ? res.response : "";
+
+    return {
+      kind: "result",
+      text,
+      ...(sessionId ? { sessionId } : {}),
+      ...(usage ? { usage } : {}),
+      ...(errorText ? { errorText } : {}),
+    };
+  }
+
+  return [];
+}
+
+// Gemini CLI (@google/gemini-cli) uses `type` field in stream-json events, not `event`.
+export function parseGeminiJsonlEvent(line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  if (typeof parsed.type !== "string") return null;
+
+  if (parsed.type === "init") {
+    const sessionId = typeof parsed.session_id === "string" ? parsed.session_id.trim() : "";
+    return sessionId ? { kind: "sessionId", sessionId } : [];
+  }
+
+  if (parsed.type === "message") {
+    if (parsed.role !== "assistant") return [];
+    const text = typeof parsed.content === "string" ? parsed.content : "";
+    return text ? [{ kind: "text", text }] : [];
+  }
+
+  if (parsed.type === "error") {
+    // Gemini emits {type:"error", severity:"warning"|"error"} mid-stream for non-fatal events;
+    // the final outcome is in the later "result" event, so we don't terminate early here.
+    return [];
+  }
+
+  if (parsed.type === "done" || parsed.type === "result") {
+    const status = typeof parsed.status === "string" ? parsed.status.toLowerCase() : "";
+    const isError = status === "error" || status === "failure";
+
+    let errorText;
+    if (isError) {
+      const errObj = parsed.error && typeof parsed.error === "object" ? parsed.error : null;
+      const errStr = errObj
+        ? (typeof errObj.message === "string" ? errObj.message.trim() : "")
+        : (typeof parsed.error === "string" ? parsed.error.trim() : "");
+      errorText = errStr || `Gemini CLI ended with status ${status}`;
+    }
+
+    const stats = parsed.stats && typeof parsed.stats === "object" ? parsed.stats : null;
+    const usage = normalizeAgyUsage(stats);
+    const sessionId =
+      (typeof parsed.session_id === "string" && parsed.session_id.trim()) || undefined;
+
+    return {
+      kind: "result",
+      text: !errorText && typeof parsed.response === "string" ? parsed.response : "",
+      ...(sessionId ? { sessionId } : {}),
+      ...(usage ? { usage } : {}),
+      ...(errorText ? { errorText } : {}),
+    };
+  }
+  return [];
+}
+
+export function parseJSONL(text) {
+  return String(text || "")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { raw: line };
+      }
+    });
+}
+
+// Returns { command, binary } so callers can build binary-specific configs.
+export function resolveAgyCommand(findBinary = detectBinary) {
+  const primary = findBinary(PROVIDERS.agy.binary);
+  if (primary?.installed) {
+    return { command: primary.path || PROVIDERS.agy.binary, binary: PROVIDERS.agy.binary };
+  }
+  const alt = PROVIDERS.agy.altBinary ? findBinary(PROVIDERS.agy.altBinary) : null;
+  if (alt?.installed) {
+    return { command: alt.path || PROVIDERS.agy.altBinary, binary: PROVIDERS.agy.altBinary };
+  }
+  return { command: PROVIDERS.agy.binary, binary: PROVIDERS.agy.binary };
+}
+
+export function buildAgyCliBackend({ findBinary = detectBinary } = {}) {
+  const { command, binary } = resolveAgyCommand(findBinary);
+  const isGemini = binary === PROVIDERS.agy.altBinary;
+
+  if (isGemini) {
+    // Gemini CLI does not support --disable-slash-commands or --conversation resume,
+    // and uses a different stream-json event format.
+    return {
+      id: "agy-cli",
+      modelProvider: "agy-cli",
+      ownsNativeCompaction: true,
+      sideQuestionToolMode: "disabled",
+      autoSelectAuthProfile: false,
+      parseJsonlEvent: parseGeminiJsonlEvent,
+      config: {
+        command,
+        args: ["--output-format", "stream-json"],
+        output: "jsonl",
+        input: "arg",
+        promptArg: "--prompt",
+        modelArg: "--model",
+        serialize: true,
+      },
+    };
+  }
+
+  const baseFlags = ["--disable-slash-commands", "--output-format", "stream-json"];
+  return {
+    id: "agy-cli",
+    modelProvider: "agy-cli",
+    ownsNativeCompaction: true,
+    sideQuestionToolMode: "disabled",
+    autoSelectAuthProfile: false,
+    parseJsonlEvent: parseAgyJsonlEvent,
+    config: {
+      command,
+      args: baseFlags,
+      resumeArgs: ["--conversation", "{sessionId}", ...baseFlags],
+      output: "jsonl",
+      resumeOutput: "jsonl",
+      input: "arg",
+      promptArg: "--prompt",
+      modelArg: "--model",
+      sessionMode: "existing",
+      sessionIdFields: ["conversation_id", "conversationId", "session_id", "sessionId"],
+      serialize: true,
+    },
+  };
+}
+
+export default {
+  id: PLUGIN_NAME,
+  name: "openclaw-sub (Antigravity CLI)",
+  description: "Run Google Antigravity CLI (agy) and subscription failover through OpenClaw",
+  register(api, opts) {
+    api.registerCliBackend(buildAgyCliBackend(opts));
+  },
+};
