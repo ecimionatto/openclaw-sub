@@ -80,11 +80,12 @@ After `openclaw gateway install` creates `~/.config/systemd/user/openclaw-gatewa
 # Dry-run to preview the drop-in and PATH
 npx openclaw-sub install-systemd --dry-run
 
-# Write the drop-in and restart openclaw-gateway (requires systemd --user running)
-npx openclaw-sub install-systemd --enable
-
-# If you have a legacy openclaw-sub.service from a previous install, remove it:
+# If you have a legacy openclaw-sub.service from a previous install, use --migrate
+# (run this INSTEAD of --enable alone — prevents a port 18789 conflict):
 npx openclaw-sub install-systemd --enable --migrate
+
+# Fresh install (no legacy service): write the drop-in and restart openclaw-gateway
+npx openclaw-sub install-systemd --enable
 ```
 
 The drop-in is written to `~/.config/systemd/user/openclaw-gateway.service.d/clawsub.conf` and contains only:

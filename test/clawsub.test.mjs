@@ -592,7 +592,8 @@ test("inspectOpenClawJson reports missing agy-cli plugin path when absent from l
 });
 
 test("generateSystemdService produces a drop-in conf with [Service] Environment=PATH", () => {
-  const result = generateSystemdService({ nodeBinDir: "/usr/local/bin", checkGateway: false });
+  const fakeRunner = (cmd) => { throw new Error(`not found: ${cmd}`); };
+  const result = generateSystemdService({ nodeBinDir: "/usr/local/bin", checkGateway: false, runner: fakeRunner });
   assert.ok(typeof result.content === "string", "content must be a string");
   assert.match(result.content, /^\[Service\]/m, "must have [Service] section");
   assert.match(result.content, /Environment="PATH=/, "must set PATH in Environment=");
@@ -610,10 +611,12 @@ test("generateSystemdService suggestedPath is absolute and uses homeDir", () => 
 });
 
 test("generateSystemdService PATH includes nodeBinDir and ~/.local/bin", () => {
+  const fakeRunner = (cmd) => { throw new Error(`not found: ${cmd}`); };
   const result = generateSystemdService({
     nodeBinDir: "/custom/node/bin",
     homeDir: "/tmp/fakehome",
     checkGateway: false,
+    runner: fakeRunner,
   });
   assert.match(result.content, /\/custom\/node\/bin/, "PATH must include nodeBinDir");
   assert.match(result.content, /\/tmp\/fakehome\/.local\/bin/, "PATH must include ~/.local/bin");
@@ -778,11 +781,17 @@ test("installSystemdService writes drop-in to openclaw-gateway.service.d/clawsub
 
 test("installSystemdService warns when XDG_RUNTIME_DIR is unset", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-xdg-"));
+  const fakeRunner = (cmd) => {
+    if (/loginctl/.test(cmd)) return "Linger=no";
+    if (/which /.test(cmd)) throw new Error("not found");
+    if (/npm config/.test(cmd)) throw new Error("no npm");
+  };
   const result = installSystemdService({
     nodeBinDir: "/usr/local/bin",
     dryRun: true,
     homeDir: tmpDir,
     checkGateway: false,
+    runner: fakeRunner,
     envGetter: (k) => (k === "XDG_RUNTIME_DIR" ? undefined : process.env[k]),
   });
   assert.ok(result.warnings.some((w) => /XDG_RUNTIME_DIR/.test(w)), "must warn on missing XDG_RUNTIME_DIR");
@@ -853,20 +862,38 @@ test("installSystemdService --migrate disables and stops legacy openclaw-sub.ser
 test("resolvePATHDirs includes each tool dir and npm global bin, dedupes shared dirs", () => {
   const fakeRunner = (cmd) => {
     if (cmd.includes("which claude")) return "/home/u/.mise/shims/claude";
-    if (cmd.includes("which codex")) return "/home/u/.npm-global/bin/codex";
+    if (cmd.includes("which codex")) return "/home/u/.nvm/versions/node/v20/bin/codex";
     if (cmd.includes("which agy")) return "/opt/agy/bin/agy";
-    if (cmd.includes("which gemini")) return "/home/u/.npm-global/bin/gemini";
+    if (cmd.includes("which gemini")) return "/home/u/.local/share/mise/installs/gemini/1.0/bin/gemini";
     if (/npm config get prefix/.test(cmd)) return "/home/u/.npm-global";
     throw new Error("not found");
   };
   const dirs = resolvePATHDirs({ nodeBinDir: "/usr/local/bin", homeDir: "/tmp/fakehome2", runner: fakeRunner });
   assert.ok(dirs.includes("/home/u/.mise/shims"), "claude dir must be included");
-  assert.ok(dirs.includes("/home/u/.npm-global/bin"), "codex/gemini dir must be included");
+  assert.ok(dirs.includes("/home/u/.nvm/versions/node/v20/bin"), "codex dir must be included");
   assert.ok(dirs.includes("/opt/agy/bin"), "agy dir must be included");
-  const count = dirs.filter((d) => d === "/home/u/.npm-global/bin").length;
-  assert.equal(count, 1, "deduped dir must appear exactly once");
+  assert.ok(dirs.includes("/home/u/.local/share/mise/installs/gemini/1.0/bin"), "gemini dir must be included");
+  assert.ok(dirs.includes("/home/u/.npm-global/bin"), "npm global bin must be included");
   const unique = new Set(dirs);
   assert.equal(dirs.length, unique.size, "no duplicates in PATH dirs");
+
+  // Dedupe: codex and gemini share a dir; npm prefix bin is distinct; none of the above assertions are hidden
+  const sharedRunner = (cmd) => {
+    if (cmd.includes("which claude")) return "/home/u/.mise/shims/claude";
+    if (cmd.includes("which codex")) return "/home/u/.shared/bin/codex";
+    if (cmd.includes("which agy")) return "/opt/agy/bin/agy";
+    if (cmd.includes("which gemini")) return "/home/u/.shared/bin/gemini";
+    if (/npm config get prefix/.test(cmd)) return "/home/u/.npm-global";
+    throw new Error("not found");
+  };
+  const dirs2 = resolvePATHDirs({ nodeBinDir: "/usr/local/bin", homeDir: "/tmp/fakehome2", runner: sharedRunner });
+  const sharedCount = dirs2.filter((d) => d === "/home/u/.shared/bin").length;
+  assert.equal(sharedCount, 1, "shared codex/gemini dir must appear exactly once");
+  assert.ok(dirs2.includes("/home/u/.mise/shims"), "claude dir still present after dedupe");
+  assert.ok(dirs2.includes("/opt/agy/bin"), "agy dir still present after dedupe");
+  assert.ok(dirs2.includes("/home/u/.npm-global/bin"), "npm global bin still present after dedupe");
+  const unique2 = new Set(dirs2);
+  assert.equal(dirs2.length, unique2.size, "no duplicates in deduped PATH dirs");
 });
 
 test("installSystemdService with enable=true and migrate=true stops legacy before restarting gateway", () => {
@@ -941,10 +968,17 @@ test("install-systemd --dry-run --migrate prints legacy service path and disable
 
 test("installSystemdService returns gatewayServiceMissing when openclaw-gateway.service absent", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-gwmissing-"));
+  const fakeRunner = (cmd) => {
+    if (/loginctl/.test(cmd)) return "Linger=no";
+    if (/which /.test(cmd)) throw new Error("not found");
+    if (/npm config/.test(cmd)) throw new Error("no npm");
+  };
   const result = installSystemdService({
     nodeBinDir: "/usr/local/bin",
     homeDir: tmpDir,
     checkGateway: true,
+    runner: fakeRunner,
+    envGetter: () => "1",
   });
   assert.equal(result.ok, false);
   assert.equal(result.gatewayServiceMissing, true);
