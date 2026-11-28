@@ -91,6 +91,73 @@ export function readOpenClawJson(homeDir) {
 const SESSION_CATALOG_PROVIDERS = ["anthropic", "codex"];
 
 /**
+ * Deep-merges `patch` into `base`, returning a new object.
+ * Arrays are replaced, not merged.
+ * @param {object} base
+ * @param {object} patch
+ * @returns {object}
+ */
+function deepMerge(base, patch) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== null && typeof v === "object" && !Array.isArray(v) && typeof base[k] === "object" && base[k] !== null && !Array.isArray(base[k])) {
+      out[k] = deepMerge(base[k], v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+const CLAWSUB_PATCH = {
+  plugins: {
+    entries: {
+      anthropic: { config: { sessionCatalog: { enabled: false } } },
+      codex: { config: { sessionCatalog: { enabled: false } } },
+    },
+  },
+};
+
+/**
+ * Reads ~/.openclaw/openclaw.json, deep-merges clawsub-owned keys (sessionCatalog settings),
+ * writes a timestamped backup if the file changes, then writes the merged result.
+ * Second call is a no-op if the file already has the correct values.
+ * @param {string} [homeDir]
+ * @returns {{ changed: boolean, jsonPath: string, backupPath: string|null }}
+ */
+export function writeOpenClawJson(homeDir) {
+  const dir = homeDir || os.homedir();
+  const ocDir = path.join(dir, ".openclaw");
+  const jsonPath = path.join(ocDir, "openclaw.json");
+
+  let existing = {};
+  let existingRaw = null;
+  try {
+    existingRaw = fs.readFileSync(jsonPath, "utf8");
+    existing = JSON.parse(existingRaw);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+
+  const merged = deepMerge(existing, CLAWSUB_PATCH);
+  const mergedStr = JSON.stringify(merged, null, 2) + "\n";
+
+  if (existingRaw !== null && mergedStr === JSON.stringify(JSON.parse(existingRaw), null, 2) + "\n") {
+    return { changed: false, jsonPath, backupPath: null };
+  }
+
+  let backupPath = null;
+  if (existingRaw !== null) {
+    backupPath = path.join(ocDir, `openclaw.json.bak.${Date.now()}`);
+    fs.writeFileSync(backupPath, existingRaw, "utf8");
+  }
+
+  fs.mkdirSync(ocDir, { recursive: true });
+  fs.writeFileSync(jsonPath, mergedStr, "utf8");
+  return { changed: true, jsonPath, backupPath };
+}
+
+/**
  * Validates an openclaw.json object for headless-safe settings.
  * Returns { issues, recommendations } arrays with human-readable strings.
  * @param {object} parsed

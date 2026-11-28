@@ -5,7 +5,7 @@ import {
   loadBatonStore,
   saveBatonStore,
 } from "../src/baton.mjs";
-import { generateOpenClawIntegration, runDoctor } from "../src/openclaw-config.mjs";
+import { generateOpenClawIntegration, runDoctor, writeOpenClawJson } from "../src/openclaw-config.mjs";
 import { PROVIDERS, detectBinary, inspectProvider } from "../src/providers.mjs";
 import { routePrompt } from "../src/router.mjs";
 import { computeSavings } from "../src/savings.mjs";
@@ -196,6 +196,15 @@ function cmdInit(flags) {
   });
   const snap = recordVersionSnapshot(stateDir, "init");
 
+  const ocWrite = writeOpenClawJson();
+  if (ocWrite.changed) {
+    if (ocWrite.backupPath) {
+      console.log(`  ✓ Backup written:   ${ocWrite.backupPath}`);
+    }
+    console.log(`  ✓ openclaw.json:    ${ocWrite.jsonPath} (clawsub keys merged)`);
+  } else {
+    console.log(`  ✓ openclaw.json:    ${ocWrite.jsonPath} (already up-to-date, no-op)`);
+  }
   console.log(`  ✓ Config saved:     ${stateDir}/clawsub.json`);
   console.log(`  ✓ Profile saved:    ${integration.profilePath}`);
   console.log(`  ✓ Version snapshot: ${stateDir}/clawsub-versions.json (clawsub v${snap.clawsub})`);
