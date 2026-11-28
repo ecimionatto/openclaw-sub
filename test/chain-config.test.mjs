@@ -1,0 +1,389 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { normalizeChain, KNOWN_PROVIDERS, loadConfig } from "../src/state.mjs";
+
+test("KNOWN_PROVIDERS contains expected provider ids", () => {
+  assert.ok(Array.isArray(KNOWN_PROVIDERS));
+  for (const p of ["claude", "codex", "agy", "ollama"]) {
+    assert.ok(KNOWN_PROVIDERS.includes(p), `missing ${p}`);
+  }
+});
+
+test("normalizeChain: string entry back-compat", () => {
+  const result = normalizeChain({ chain: ["claude", "codex", "agy"] });
+  assert.equal(result.chain.length, 3);
+  assert.deepEqual(result.chain[0], { key: "claude", provider: "claude", model: undefined, optional: false, failover: undefined, args: undefined });
+  assert.deepEqual(result.chain[1], { key: "codex", provider: "codex", model: undefined, optional: false, failover: undefined, args: undefined });
+  assert.deepEqual(result.chain[2], { key: "agy", provider: "agy", model: undefined, optional: false, failover: undefined, args: undefined });
+});
+
+test("normalizeChain: string entry with model (provider:model)", () => {
+  const result = normalizeChain({ chain: ["claude:opus"] });
+  assert.equal(result.chain[0].key, "claude:opus");
+  assert.equal(result.chain[0].provider, "claude");
+  assert.equal(result.chain[0].model, "opus");
+  assert.equal(result.chain[0].optional, false);
+});
+
+test("normalizeChain: string entry with ? suffix sets optional", () => {
+  const result = normalizeChain({ chain: ["agy?"] });
+  assert.equal(result.chain[0].provider, "agy");
+  assert.equal(result.chain[0].optional, true);
+  assert.equal(result.chain[0].key, "agy");
+});
+
+test("normalizeChain: string entry with model and ? suffix", () => {
+  const result = normalizeChain({ chain: ["claude:opus?"] });
+  assert.equal(result.chain[0].key, "claude:opus");
+  assert.equal(result.chain[0].provider, "claude");
+  assert.equal(result.chain[0].model, "opus");
+  assert.equal(result.chain[0].optional, true);
+});
+
+test("normalizeChain: object entry with all fields", () => {
+  const raw = { provider: "claude", model: "opus", optional: true, failover: false, args: ["--verbose"] };
+  const result = normalizeChain({ chain: [raw] });
+  assert.deepEqual(result.chain[0], { key: "claude:opus", provider: "claude", model: "opus", optional: true, failover: false, args: ["--verbose"] });
+});
+
+test("normalizeChain: object entry minimal (only provider)", () => {
+  const result = normalizeChain({ chain: [{ provider: "codex" }] });
+  assert.equal(result.chain[0].key, "codex");
+  assert.equal(result.chain[0].provider, "codex");
+  assert.equal(result.chain[0].model, undefined);
+  assert.equal(result.chain[0].optional, false);
+});
+
+test("normalizeChain: top-level failover defaults to true", () => {
+  const result = normalizeChain({ chain: ["claude"] });
+  assert.equal(result.failover, true);
+});
+
+test("normalizeChain: top-level failover can be set false", () => {
+  const result = normalizeChain({ chain: ["claude"], failover: false });
+  assert.equal(result.failover, false);
+});
+
+test("normalizeChain: top-level failover true preserved", () => {
+  const result = normalizeChain({ chain: ["claude"], failover: true });
+  assert.equal(result.failover, true);
+});
+
+test("normalizeChain: mixed string and object entries", () => {
+  const result = normalizeChain({ chain: ["claude:opus", { provider: "codex" }, "agy?"] });
+  assert.equal(result.chain.length, 3);
+  assert.equal(result.chain[0].key, "claude:opus");
+  assert.equal(result.chain[1].key, "codex");
+  assert.equal(result.chain[2].optional, true);
+});
+
+test("normalizeChain: throws on empty chain", () => {
+  assert.throws(() => normalizeChain({ chain: [] }), /empty/i);
+});
+
+test("normalizeChain: throws on missing chain", () => {
+  assert.throws(() => normalizeChain({}), /must be an array/i);
+});
+
+test("normalizeChain: throws on unknown provider string", () => {
+  assert.throws(() => normalizeChain({ chain: ["unknown-provider"] }), /unknown provider/i);
+});
+
+test("normalizeChain: throws on unknown provider in object", () => {
+  assert.throws(() => normalizeChain({ chain: [{ provider: "gpt4" }] }), /unknown provider/i);
+});
+
+test("normalizeChain: throws on exact duplicate string entries", () => {
+  assert.throws(() => normalizeChain({ chain: ["claude", "claude"] }), /duplicate/i);
+});
+
+test("normalizeChain: throws on exact duplicate with model", () => {
+  assert.throws(() => normalizeChain({ chain: ["claude:opus", "claude:opus"] }), /duplicate/i);
+});
+
+test("normalizeChain: different models are NOT duplicates", () => {
+  const result = normalizeChain({ chain: ["claude:opus", "claude:sonnet"] });
+  assert.equal(result.chain.length, 2);
+});
+
+test("normalizeChain: provider + provider:model are NOT duplicates (different keys)", () => {
+  const result = normalizeChain({ chain: ["claude", "claude:opus"] });
+  assert.equal(result.chain.length, 2);
+});
+
+test("normalizeChain: preserves other config fields", () => {
+  const result = normalizeChain({ chain: ["claude"], workspace: "/tmp/work", defaultCooldownMinutes: 30 });
+  assert.equal(result.workspace, "/tmp/work");
+  assert.equal(result.defaultCooldownMinutes, 30);
+});
+
+test("normalizeChain: throws on non-array chain", () => {
+  assert.throws(() => normalizeChain({ chain: "claude" }), /must be an array/i);
+});
+
+test("normalizeChain: throws on string failover value", () => {
+  assert.throws(() => normalizeChain({ chain: ["claude"], failover: "false" }), /failover must be a boolean/i);
+});
+
+test("normalizeChain: throws on empty model in string entry", () => {
+  assert.throws(() => normalizeChain({ chain: ["claude:"] }), /empty model/i);
+});
+
+test("normalizeChain: throws on object entry with optional as string", () => {
+  assert.throws(
+    () => normalizeChain({ chain: [{ provider: "claude", optional: "false" }] }),
+    /"optional" must be a boolean/i
+  );
+});
+
+test("normalizeChain: throws on object entry with non-array args", () => {
+  assert.throws(
+    () => normalizeChain({ chain: [{ provider: "claude", args: "--verbose" }] }),
+    /"args" must be an array/i
+  );
+});
+
+test("normalizeChain: provider part is lowercased, model case preserved", () => {
+  const result = normalizeChain({ chain: ["Claude:MyTag"] });
+  assert.equal(result.chain[0].provider, "claude");
+  assert.equal(result.chain[0].model, "MyTag");
+});
+
+test("loadConfig: throws on unknown provider in saved config", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: ["claude", "badprovider"] }),
+      "utf8"
+    );
+    assert.throws(() => loadConfig(path.join(tmpDir, "claw")), /unknown provider/i);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: returns normalized entry objects on success", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: ["claude", "codex"] }),
+      "utf8"
+    );
+    const config = loadConfig(path.join(tmpDir, "claw"));
+    assert.equal(config.chain.length, 2);
+    assert.equal(config.chainEntries[0].provider, "claude");
+    assert.equal(config.chainEntries[0].key, "claude");
+    assert.equal(config.chainEntries[1].provider, "codex");
+    assert.equal(config.failover, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: throws on empty chain array", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: [] }),
+      "utf8"
+    );
+    assert.throws(() => loadConfig(path.join(tmpDir, "claw")), /empty/i);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: preserves model and optional on round-trip", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: [{ provider: "claude", model: "opus", optional: false }, { provider: "agy", optional: true }] }),
+      "utf8"
+    );
+    const config = loadConfig(path.join(tmpDir, "claw"));
+    assert.equal(config.chainEntries[0].provider, "claude");
+    assert.equal(config.chainEntries[0].model, "opus");
+    assert.equal(config.chainEntries[0].key, "claude:opus");
+    assert.equal(config.chainEntries[1].optional, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: two models same provider are not duplicates", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: [{ provider: "claude", model: "opus" }, { provider: "claude", model: "sonnet" }] }),
+      "utf8"
+    );
+    const config = loadConfig(path.join(tmpDir, "claw"));
+    assert.equal(config.chainEntries.length, 2);
+    assert.equal(config.chainEntries[0].key, "claude:opus");
+    assert.equal(config.chainEntries[1].key, "claude:sonnet");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain saves full entry objects and reloads without error", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,codex,agy?"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir }
+    );
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.chain.length, 3);
+    assert.equal(saved.chain[0].provider, "claude");
+    assert.equal(saved.chain[0].model, "opus");
+    assert.equal(saved.chain[1].provider, "codex");
+    assert.equal(saved.chain[2].provider, "agy");
+    assert.equal(saved.chain[2].optional, true);
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.chainEntries.length, 3);
+    assert.equal(reloaded.chainEntries[0].key, "claude:opus");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain claude:opus,claude:sonnet saves distinct entries and reloads without duplicate error", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,claude:sonnet"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir }
+    );
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.chain.length, 2);
+    assert.equal(saved.chain[0].key, "claude:opus");
+    assert.equal(saved.chain[1].key, "claude:sonnet");
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.chain.length, 2);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain with --no-failover saves failover=false and reloads correctly", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude,codex", "--no-failover"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir }
+    );
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.failover, false);
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.failover, false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: missing config file returns default chain with failover=true", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    const config = loadConfig(tmpDir);
+    assert.ok(Array.isArray(config.chain), "chain should be an array");
+    assert.ok(Array.isArray(config.chainEntries), "chainEntries should be an array");
+    assert.equal(config.chainEntries.length, config.chain.length);
+    assert.equal(config.failover, true);
+    assert.equal(config.chainEntries[0].provider, "claude");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain claude:opus,claude:sonnet --probe does not throw Duplicate chain entry", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,claude:sonnet", "--probe"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", stdio: "pipe", cwd: tmpDir }
+    );
+  } catch (err) {
+    const output = (err.stderr || "") + (err.stdout || "");
+    if (output.includes("Duplicate chain entry")) {
+      assert.fail(`init --probe with two claude models threw Duplicate chain entry: ${output}`);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit without --chain preserves full chain entries from previous init", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    const clawsubPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+    const opts = { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir };
+    execFileSync(process.execPath, [clawsubPath, "init", "--chain", "claude:opus,claude:sonnet?"], opts);
+    execFileSync(process.execPath, [clawsubPath, "init"], opts);
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.chain.length, 2);
+    assert.equal(saved.chain[0].key, "claude:opus");
+    assert.equal(saved.chain[0].model, "opus");
+    assert.equal(saved.chain[1].key, "claude:sonnet");
+    assert.equal(saved.chain[1].optional, true);
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.chainEntries.length, 2);
+    assert.equal(reloaded.chainEntries[0].key, "claude:opus");
+    assert.equal(reloaded.chainEntries[1].optional, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdStatus shows chainEntries-based chain line and JSON output with key/model/optional/failover", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-status-test-"));
+  try {
+    const clawsubPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+    const opts = { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir };
+    execFileSync(process.execPath, [clawsubPath, "init", "--chain", "claude:opus,claude:sonnet?", "--no-failover"], opts);
+
+    const textOut = execFileSync(
+      process.execPath,
+      [clawsubPath, "status"],
+      { ...opts, stdio: ["pipe", "pipe", "pipe"] }
+    );
+    assert.ok(textOut.includes("claude:opus -> claude:sonnet"), `Chain line missing expected keys; got: ${textOut}`);
+
+    const jsonOut = JSON.parse(execFileSync(
+      process.execPath,
+      [clawsubPath, "status", "--json"],
+      { ...opts, stdio: ["pipe", "pipe", "pipe"] }
+    ));
+    assert.equal(jsonOut.failover, false, "failover should be false");
+    assert.ok(Array.isArray(jsonOut.chain), "chain should be an array");
+    assert.equal(jsonOut.chain.length, 2);
+    const first = jsonOut.chain[0];
+    assert.equal(first.key, "claude:opus");
+    assert.equal(first.model, "opus");
+    assert.equal(first.optional, false);
+    const second = jsonOut.chain[1];
+    assert.equal(second.key, "claude:sonnet");
+    assert.equal(second.optional, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
