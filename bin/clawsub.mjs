@@ -110,6 +110,7 @@ function cmdInit(flags) {
       console.error(`Error loading existing config: ${err.message}`);
       process.exit(1);
     }
+    console.warn(`Warning: existing config invalid (${err.message}); workspace and other saved settings may not be preserved`);
     existing = {};
   }
   const rawChain = flags.chain
@@ -214,7 +215,7 @@ function cmdInit(flags) {
 
   if (flags.probe) {
     console.log("\n[5/5] Running Live Verification Probes...");
-    cmdTest({ chain: chainProviderIds.join(",") });
+    cmdTest({ chain: requestedChain.map((e) => e.key).join(",") });
   } else {
     console.log("\n[5/5] Next Steps:");
     console.log("  • Run `clawsub test` to verify DIRECT_OK / FALLBACK_OK across your CLIs.");

@@ -19,10 +19,11 @@ function normalizeEntry(raw) {
     return { key, provider, model, optional, failover: undefined, args: undefined };
   }
   if (typeof raw === "object" && raw !== null) {
-    const { provider, model, optional = false, failover, args } = raw;
+    let { provider, model, optional = false, failover, args } = raw;
     if (typeof provider !== "string" || provider === "") {
-      throw new Error(`Entry "provider" must be a non-empty string, got ${JSON.stringify(provider)}`);
+      throw new Error(`Entry "provider" must be a non-empty string, got ${JSON.stringify(raw.provider)}`);
     }
+    provider = provider.toLowerCase();
     if (model !== undefined && (typeof model !== "string" || model === "")) {
       throw new Error(`Entry "model" must be a non-empty string or absent, got ${JSON.stringify(model)}`);
     }
@@ -32,8 +33,15 @@ function normalizeEntry(raw) {
     if (failover !== undefined && typeof failover !== "boolean") {
       throw new Error(`Entry "failover" must be a boolean or absent, got ${JSON.stringify(failover)}`);
     }
-    if (args !== undefined && !Array.isArray(args)) {
-      throw new Error(`Entry "args" must be an array or absent, got ${JSON.stringify(args)}`);
+    if (args !== undefined) {
+      if (!Array.isArray(args)) {
+        throw new Error(`Entry "args" must be an array or absent, got ${JSON.stringify(args)}`);
+      }
+      for (const arg of args) {
+        if (typeof arg !== "string") {
+          throw new Error(`Entry "args" elements must be strings, got ${JSON.stringify(arg)}`);
+        }
+      }
     }
     const key = model ? `${provider}:${model}` : provider;
     return { key, provider, model, optional, failover, args };
@@ -105,11 +113,22 @@ export function loadConfig(stateDir = getDefaultStateDir()) {
   try {
     raw = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
-    return { ...DEFAULT_CONFIG };
+    const validated = normalizeChain(DEFAULT_CONFIG);
+    return {
+      ...DEFAULT_CONFIG,
+      chain: validated.chain.map((e) => e.provider),
+      chainEntries: validated.chain,
+      failover: validated.failover,
+    };
   }
   const merged = { ...DEFAULT_CONFIG, ...raw };
   const validated = normalizeChain(merged);
-  return { ...merged, chain: validated.chain, failover: validated.failover };
+  return {
+    ...merged,
+    chain: validated.chain.map((e) => e.provider),
+    chainEntries: validated.chain,
+    failover: validated.failover,
+  };
 }
 
 export function saveConfig(config, stateDir = getDefaultStateDir()) {
