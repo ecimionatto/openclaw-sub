@@ -30,7 +30,7 @@ import {
   saveState,
 } from "../src/index.mjs";
 import { inspectOpenClawJson } from "../src/openclaw-config.mjs";
-import { generateSystemdService, installSystemdService } from "../src/ubuntu-systemd.mjs";
+import { generateSystemdService, installSystemdService, resolvePATHDirs } from "../src/ubuntu-systemd.mjs";
 import pluginEntry, { buildAgyCliBackend, parseAgyJsonlEvent, parseGeminiJsonlEvent, parseJSONL, resolveAgyCommand } from "../src/plugin.mjs";
 
 test("isQuotaError detects Claude 5-hour/weekly limits, Codex 429s, and Gemini ResourceExhausted", () => {
@@ -591,49 +591,88 @@ test("inspectOpenClawJson reports missing agy-cli plugin path when absent from l
   );
 });
 
-test("generateSystemdService produces a valid unit file with Restart=on-failure and PATH", () => {
-  const result = generateSystemdService({ workspace: "/home/user/myproject", nodeBinDir: "/usr/local/bin" });
+test("generateSystemdService produces a drop-in conf with [Service] Environment=PATH", () => {
+  const fakeRunner = (cmd) => { throw new Error(`not found: ${cmd}`); };
+  const result = generateSystemdService({ nodeBinDir: "/usr/local/bin", checkGateway: false, runner: fakeRunner });
   assert.ok(typeof result.content === "string", "content must be a string");
-  assert.match(result.content, /Restart=on-failure/);
-  assert.match(result.content, /WantedBy=default\.target/);
-  assert.match(result.content, /WorkingDirectory=\/home\/user\/myproject/);
-  assert.match(result.content, /PATH=\/usr\/local\/bin:/);
-  assert.match(result.content, /ExecStart=\/usr\/bin\/env openclaw gateway$/m);
-  assert.equal(result.serviceName, "openclaw-sub");
-  assert.match(result.suggestedPath, /openclaw-sub\.service$/);
+  assert.match(result.content, /^\[Service\]/m, "must have [Service] section");
+  assert.match(result.content, /Environment="PATH=/, "must set PATH in Environment=");
+  assert.doesNotMatch(result.content, /Restart=on-failure/, "drop-in must not duplicate Restart=");
+  assert.doesNotMatch(result.content, /WantedBy=/, "drop-in must not have [Install] section");
+  assert.doesNotMatch(result.content, /ExecStart=/, "drop-in must not duplicate ExecStart=");
+  assert.match(result.suggestedPath, /openclaw-gateway\.service\.d[\\/]clawsub\.conf$/);
+  assert.ok(result.dropInName === "clawsub.conf");
 });
 
-test("generateSystemdService resolves relative workspace path to absolute", () => {
-  const result = generateSystemdService({ workspace: "./myrelproject", nodeBinDir: "/usr/local/bin" });
-  const lines = result.content.split("\n");
-  const wdLine = lines.find((l) => l.startsWith("WorkingDirectory="));
-  assert.ok(wdLine, "WorkingDirectory line must exist");
-  assert.ok(path.isAbsolute(wdLine.replace("WorkingDirectory=", "")), "WorkingDirectory must be absolute");
+test("generateSystemdService suggestedPath is absolute and uses homeDir", () => {
+  const result = generateSystemdService({ nodeBinDir: "/usr/local/bin", homeDir: "/tmp/fakehome", checkGateway: false });
+  assert.ok(path.isAbsolute(result.suggestedPath), "suggestedPath must be absolute");
+  assert.ok(result.suggestedPath.startsWith("/tmp/fakehome"), "suggestedPath must be under homeDir");
 });
 
-test("generateSystemdService escapes percent signs and spaces in paths", () => {
+test("generateSystemdService PATH includes nodeBinDir and ~/.local/bin", () => {
+  const fakeRunner = (cmd) => { throw new Error(`not found: ${cmd}`); };
   const result = generateSystemdService({
-    workspace: "/home/user/my project%test",
-    nodeBinDir: "/usr/local/bin",
+    nodeBinDir: "/custom/node/bin",
+    homeDir: "/tmp/fakehome",
+    checkGateway: false,
+    runner: fakeRunner,
   });
-  assert.match(result.content, /WorkingDirectory=.*my project/, "literal space must be preserved in WorkingDirectory");
-  assert.match(result.content, /WorkingDirectory=.*%%test/, "percent must be doubled to %%");
-  assert.doesNotMatch(result.content, /WorkingDirectory=.*\\x20/, "\\x20 must not appear in WorkingDirectory");
+  assert.match(result.content, /\/custom\/node\/bin/, "PATH must include nodeBinDir");
+  assert.match(result.content, /\/tmp\/fakehome\/.local\/bin/, "PATH must include ~/.local/bin");
+});
+
+test("generateSystemdService PATH dedupes entries", () => {
+  const fakeRunner = (cmd) => {
+    if (cmd.includes("which claude")) return "/usr/local/bin/claude";
+    if (cmd.includes("which codex")) return "/usr/local/bin/codex";
+    throw new Error("not found");
+  };
+  const result = generateSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    homeDir: "/tmp/fakehome",
+    runner: fakeRunner,
+    checkGateway: false,
+  });
+  const pathValue = result.content.match(/Environment="PATH=([^"]+)"/)?.[1] || "";
+  const parts = pathValue.split(":");
+  const unique = new Set(parts);
+  assert.equal(parts.length, unique.size, "PATH must not have duplicate entries");
 });
 
 test("generateSystemdService escapes percent signs and spaces in nodeBinDir for Environment=PATH", () => {
   const result = generateSystemdService({
-    workspace: "/home/user/project",
     nodeBinDir: "/home/user/my node%bin",
+    homeDir: "/tmp/fakehome",
+    checkGateway: false,
   });
   assert.match(result.content, /Environment=.*\\x20/, "space in nodeBinDir must become \\x20 in Environment=");
   assert.match(result.content, /Environment=.*%%bin/, "percent in nodeBinDir must be doubled to %%");
+});
+
+test("generateSystemdService detects missing openclaw-gateway.service", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-nogw-"));
+  const result = generateSystemdService({ nodeBinDir: "/usr/local/bin", homeDir: tmpDir, checkGateway: true });
+  assert.equal(result.gatewayServiceMissing, true, "must detect missing gateway service");
+});
+
+test("generateSystemdService detects legacy openclaw-sub.service", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-legacy-"));
+  const legacyDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "openclaw-sub.service"), "[Unit]\nDescription=old\n");
+  const result = generateSystemdService({ nodeBinDir: "/usr/local/bin", homeDir: tmpDir, checkGateway: false });
+  assert.equal(result.legacyServiceExists, true, "must detect legacy openclaw-sub.service");
+  assert.match(result.legacyServicePath, /openclaw-sub\.service$/);
 });
 
 test("install-systemd --enable exits 1 when systemctl fails", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-exit1-"));
   const fakeSystemctl = path.join(tmpDir, "systemctl");
   fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const gatewayDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(gatewayDir, { recursive: true });
+  fs.writeFileSync(path.join(gatewayDir, "openclaw-gateway.service"), "[Unit]\nDescription=gateway\n");
 
   const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
   const result = spawnSync(
@@ -642,41 +681,44 @@ test("install-systemd --enable exits 1 when systemctl fails", () => {
     { env: { ...process.env, HOME: tmpDir, PATH: `${tmpDir}:${process.env.PATH}` }, encoding: "utf8" }
   );
 
-  assert.equal(result.status, 1, "exit code must be 1 when daemon-reload or enable fails");
+  assert.equal(result.status, 1, "exit code must be 1 when daemon-reload or restart fails");
 });
 
-test("installSystemdService with enable=true calls systemctl daemon-reload and enable, not on dry-run", () => {
+test("installSystemdService with enable=true calls daemon-reload and restart openclaw-gateway, not on dry-run", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-enable-"));
   const called = [];
   const fakeRunner = (cmd) => { called.push(cmd); };
 
   const result = installSystemdService({
-    workspace: tmpDir,
     nodeBinDir: "/usr/local/bin",
     dryRun: false,
     enable: true,
     homeDir: tmpDir,
     runner: fakeRunner,
+    checkGateway: false,
   });
 
   assert.equal(result.ok, true);
   assert.ok(called.includes("systemctl --user daemon-reload"), "must call daemon-reload");
-  assert.ok(called.includes("systemctl --user enable openclaw-sub"), "must call enable");
+  assert.ok(called.includes("systemctl --user restart openclaw-gateway"), "must call restart openclaw-gateway");
   assert.equal(result.enableResult.reloaded, true);
-  assert.equal(result.enableResult.enabled, true);
+  assert.equal(result.enableResult.restarted, true);
   assert.deepEqual(result.enableResult.errors, []);
 
   called.length = 0;
   const dryResult = installSystemdService({
-    workspace: tmpDir,
     nodeBinDir: "/usr/local/bin",
     dryRun: true,
     enable: true,
     homeDir: tmpDir,
     runner: fakeRunner,
+    checkGateway: false,
   });
   assert.equal(dryResult.dryRun, true);
-  assert.equal(called.length, 0, "dry-run must not call runner even with --enable");
+  assert.ok(!called.includes("systemctl --user daemon-reload"), "dry-run must not call daemon-reload");
+  assert.ok(!called.includes("systemctl --user restart openclaw-gateway"), "dry-run must not call restart");
+  assert.ok(!called.includes("systemctl --user disable openclaw-sub"), "dry-run must not call disable");
+  assert.ok(!called.includes("systemctl --user stop openclaw-sub"), "dry-run must not call stop");
 });
 
 test("installSystemdService with enable=true reports runner failures in enableResult.errors", () => {
@@ -684,53 +726,263 @@ test("installSystemdService with enable=true reports runner failures in enableRe
   const failRunner = (cmd) => { throw new Error(`${cmd}: mock failure`); };
 
   const result = installSystemdService({
-    workspace: tmpDir,
     nodeBinDir: "/usr/local/bin",
     dryRun: false,
     enable: true,
     homeDir: tmpDir,
     runner: failRunner,
+    checkGateway: false,
   });
 
   assert.equal(result.ok, true, "file was written, so ok should be true");
   assert.equal(result.enableResult.reloaded, false);
-  assert.equal(result.enableResult.enabled, false);
+  assert.equal(result.enableResult.restarted, false);
   assert.equal(result.enableResult.errors.length, 2);
   assert.match(result.enableResult.errors[0], /daemon-reload failed/);
-  assert.match(result.enableResult.errors[1], /enable openclaw-sub failed/);
+  assert.match(result.enableResult.errors[1], /restart openclaw-gateway failed/);
 });
 
-test("installSystemdService dry-run returns content and instructions without writing", () => {
+test("installSystemdService dry-run returns drop-in content and instructions without writing", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-"));
   const result = installSystemdService({
-    workspace: tmpDir,
     nodeBinDir: "/usr/local/bin",
     dryRun: true,
     homeDir: tmpDir,
+    checkGateway: false,
   });
   assert.equal(result.ok, true);
   assert.equal(result.dryRun, true);
-  assert.match(result.content, /Restart=on-failure/);
+  assert.match(result.content, /^\[Service\]/m, "drop-in must have [Service] section");
+  assert.match(result.content, /Environment="PATH=/, "drop-in must set PATH");
   assert.ok(Array.isArray(result.lingerInstructions));
   assert.ok(result.lingerInstructions.some((l) => /loginctl enable-linger/.test(l)));
-  assert.ok(result.lingerInstructions.some((l) => /systemctl --user enable openclaw-sub/.test(l)));
+  assert.ok(result.lingerInstructions.some((l) => /restart openclaw-gateway/.test(l)));
   assert.equal(fs.existsSync(result.servicePath), false, "dry-run must not write the file");
 });
 
-test("installSystemdService writes service file to correct path when not dry-run", () => {
+test("installSystemdService writes drop-in to openclaw-gateway.service.d/clawsub.conf", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-systemd-write-"));
   const result = installSystemdService({
-    workspace: tmpDir,
     nodeBinDir: "/usr/local/bin",
     dryRun: false,
     homeDir: tmpDir,
+    checkGateway: false,
   });
   assert.equal(result.ok, true);
   assert.equal(result.dryRun, false);
-  assert.equal(fs.existsSync(result.servicePath), true, "service file must be written");
+  assert.match(result.servicePath, /openclaw-gateway\.service\.d[\\/]clawsub\.conf$/);
+  assert.equal(fs.existsSync(result.servicePath), true, "drop-in file must be written");
   const written = fs.readFileSync(result.servicePath, "utf8");
-  assert.match(written, /Restart=on-failure/);
-  assert.match(written, /WantedBy=default\.target/);
+  assert.match(written, /^\[Service\]/m);
+  assert.match(written, /Environment="PATH=/);
+  assert.doesNotMatch(written, /Restart=on-failure/);
+  assert.doesNotMatch(written, /WantedBy=/);
+});
+
+test("installSystemdService warns when XDG_RUNTIME_DIR is unset", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-xdg-"));
+  const fakeRunner = (cmd) => {
+    if (/loginctl/.test(cmd)) return "Linger=no";
+    if (/which /.test(cmd)) throw new Error("not found");
+    if (/npm config/.test(cmd)) throw new Error("no npm");
+  };
+  const result = installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    homeDir: tmpDir,
+    checkGateway: false,
+    runner: fakeRunner,
+    envGetter: (k) => (k === "XDG_RUNTIME_DIR" ? undefined : process.env[k]),
+  });
+  assert.ok(result.warnings.some((w) => /XDG_RUNTIME_DIR/.test(w)), "must warn on missing XDG_RUNTIME_DIR");
+});
+
+test("installSystemdService reports linger=no warning and linger=yes as ok", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-linger-"));
+
+  const noLingerRunner = (cmd) => {
+    if (/loginctl/.test(cmd)) return "Linger=no";
+    if (/which /.test(cmd)) throw new Error("not found");
+    if (/npm config/.test(cmd)) throw new Error("no npm");
+  };
+  const noLingerResult = installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    homeDir: tmpDir,
+    runner: noLingerRunner,
+    checkGateway: false,
+    envGetter: () => "1",
+  });
+  assert.equal(noLingerResult.lingerEnabled, false);
+  assert.ok(noLingerResult.warnings.some((w) => /Linger is disabled/.test(w)));
+
+  const yesLingerRunner = (cmd) => {
+    if (/loginctl/.test(cmd)) return "Linger=yes";
+    if (/which /.test(cmd)) throw new Error("not found");
+    if (/npm config/.test(cmd)) throw new Error("no npm");
+  };
+  const yesLingerResult = installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    dryRun: true,
+    homeDir: tmpDir,
+    runner: yesLingerRunner,
+    checkGateway: false,
+    envGetter: () => "1",
+  });
+  assert.equal(yesLingerResult.lingerEnabled, true);
+  assert.ok(!yesLingerResult.warnings.some((w) => /Linger is disabled/.test(w)));
+});
+
+test("installSystemdService --migrate disables and stops legacy openclaw-sub.service", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-migrate-"));
+  const legacyDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const called = [];
+  const fakeRunner = (cmd) => { called.push(cmd); };
+
+  const result = installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    migrate: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+    checkGateway: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.legacyServiceExists, true);
+  assert.ok(called.includes("systemctl --user disable openclaw-sub"), "must disable legacy service");
+  assert.ok(called.includes("systemctl --user stop openclaw-sub"), "must stop legacy service");
+  assert.equal(result.migrateResult.disabled, true);
+  assert.equal(result.migrateResult.stopped, true);
+});
+
+test("resolvePATHDirs includes each tool dir and npm global bin, dedupes shared dirs", () => {
+  const fakeRunner = (cmd) => {
+    if (cmd.includes("which claude")) return "/home/u/.mise/shims/claude";
+    if (cmd.includes("which codex")) return "/home/u/.nvm/versions/node/v20/bin/codex";
+    if (cmd.includes("which agy")) return "/opt/agy/bin/agy";
+    if (cmd.includes("which gemini")) return "/home/u/.local/share/mise/installs/gemini/1.0/bin/gemini";
+    if (/npm config get prefix/.test(cmd)) return "/home/u/.npm-global";
+    throw new Error("not found");
+  };
+  const dirs = resolvePATHDirs({ nodeBinDir: "/usr/local/bin", homeDir: "/tmp/fakehome2", runner: fakeRunner });
+  assert.ok(dirs.includes("/home/u/.mise/shims"), "claude dir must be included");
+  assert.ok(dirs.includes("/home/u/.nvm/versions/node/v20/bin"), "codex dir must be included");
+  assert.ok(dirs.includes("/opt/agy/bin"), "agy dir must be included");
+  assert.ok(dirs.includes("/home/u/.local/share/mise/installs/gemini/1.0/bin"), "gemini dir must be included");
+  assert.ok(dirs.includes("/home/u/.npm-global/bin"), "npm global bin must be included");
+  const unique = new Set(dirs);
+  assert.equal(dirs.length, unique.size, "no duplicates in PATH dirs");
+
+  // Dedupe: codex and gemini share a dir; npm prefix bin is distinct; none of the above assertions are hidden
+  const sharedRunner = (cmd) => {
+    if (cmd.includes("which claude")) return "/home/u/.mise/shims/claude";
+    if (cmd.includes("which codex")) return "/home/u/.shared/bin/codex";
+    if (cmd.includes("which agy")) return "/opt/agy/bin/agy";
+    if (cmd.includes("which gemini")) return "/home/u/.shared/bin/gemini";
+    if (/npm config get prefix/.test(cmd)) return "/home/u/.npm-global";
+    throw new Error("not found");
+  };
+  const dirs2 = resolvePATHDirs({ nodeBinDir: "/usr/local/bin", homeDir: "/tmp/fakehome2", runner: sharedRunner });
+  const sharedCount = dirs2.filter((d) => d === "/home/u/.shared/bin").length;
+  assert.equal(sharedCount, 1, "shared codex/gemini dir must appear exactly once");
+  assert.ok(dirs2.includes("/home/u/.mise/shims"), "claude dir still present after dedupe");
+  assert.ok(dirs2.includes("/opt/agy/bin"), "agy dir still present after dedupe");
+  assert.ok(dirs2.includes("/home/u/.npm-global/bin"), "npm global bin still present after dedupe");
+  const unique2 = new Set(dirs2);
+  assert.equal(dirs2.length, unique2.size, "no duplicates in deduped PATH dirs");
+});
+
+test("installSystemdService with enable=true and migrate=true stops legacy before restarting gateway", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-order-"));
+  const legacyDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const callOrder = [];
+  const fakeRunner = (cmd) => { callOrder.push(cmd); };
+
+  installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    enable: true,
+    migrate: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+    checkGateway: false,
+  });
+
+  const disableIdx = callOrder.indexOf("systemctl --user disable openclaw-sub");
+  const stopIdx = callOrder.indexOf("systemctl --user stop openclaw-sub");
+  const reloadIdx = callOrder.indexOf("systemctl --user daemon-reload");
+  const restartIdx = callOrder.indexOf("systemctl --user restart openclaw-gateway");
+
+  assert.ok(disableIdx !== -1, "must call disable");
+  assert.ok(stopIdx !== -1, "must call stop");
+  assert.ok(reloadIdx !== -1, "must call daemon-reload");
+  assert.ok(restartIdx !== -1, "must call restart");
+  assert.ok(disableIdx < reloadIdx, "disable must come before daemon-reload");
+  assert.ok(stopIdx < reloadIdx, "stop must come before daemon-reload");
+  assert.ok(disableIdx < restartIdx, "disable must come before restart");
+  assert.ok(stopIdx < restartIdx, "stop must come before restart");
+});
+
+test("install-systemd --migrate exits 1 when disable/stop fails", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-migrate-exit1-"));
+  const fakeSystemctl = path.join(tmpDir, "systemctl");
+  fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const gatewayDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(gatewayDir, { recursive: true });
+  fs.writeFileSync(path.join(gatewayDir, "openclaw-gateway.service"), "[Unit]\nDescription=gateway\n");
+  fs.writeFileSync(path.join(gatewayDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--migrate"],
+    { env: { ...process.env, HOME: tmpDir, PATH: `${tmpDir}:${process.env.PATH}` }, encoding: "utf8" }
+  );
+  assert.equal(result.status, 1, "exit code must be 1 when disable or stop fails");
+});
+
+test("install-systemd --dry-run --migrate prints legacy service path and disable/stop commands", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-drymigrate-"));
+  const legacyDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "openclaw-gateway.service"), "[Unit]\nDescription=gateway\n");
+  fs.writeFileSync(path.join(legacyDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--dry-run", "--migrate"],
+    { env: { ...process.env, HOME: tmpDir }, encoding: "utf8" }
+  );
+  assert.ok(result.stdout.includes("openclaw-sub.service"), "must mention legacy service path");
+  assert.ok(result.stdout.includes("disable openclaw-sub"), "must show disable command");
+  assert.ok(result.stdout.includes("stop openclaw-sub"), "must show stop command");
+});
+
+test("installSystemdService returns gatewayServiceMissing when openclaw-gateway.service absent", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-gwmissing-"));
+  const fakeRunner = (cmd) => {
+    if (/loginctl/.test(cmd)) return "Linger=no";
+    if (/which /.test(cmd)) throw new Error("not found");
+    if (/npm config/.test(cmd)) throw new Error("no npm");
+  };
+  const result = installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    homeDir: tmpDir,
+    checkGateway: true,
+    runner: fakeRunner,
+    envGetter: () => "1",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.gatewayServiceMissing, true);
+  assert.match(result.message, /openclaw gateway install/);
 });
 
 test("inspectOpenClawJson expands ~ paths before checking existence", () => {

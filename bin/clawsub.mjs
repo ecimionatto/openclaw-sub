@@ -37,7 +37,7 @@ Usage:
   clawsub loop init [--workspace <path>] [--dry-run] [--force]
   clawsub init [--chain claude,codex,agy] [--workspace <path>] [--install-openclaw] [--openclaw-version <ver>] [--install-skill] [--probe]
   clawsub install-ubuntu [--openclaw-version <ver>] [--chain claude,codex,agy] [--dry-run]
-  clawsub install-systemd [--enable] [--dry-run] [--workspace <path>]
+  clawsub install-systemd [--enable] [--migrate] [--dry-run]
   clawsub install-skill [--workspace <path>] [--global]
   clawsub version [--json]
   clawsub status [--json]
@@ -237,22 +237,36 @@ function cmdInstallUbuntu(flags) {
 }
 
 function cmdInstallSystemd(flags) {
-  if (flags.workspace === true) {
-    console.error("Error: --workspace requires a path argument");
-    process.exit(1);
-  }
-  const stateDir = getDefaultStateDir();
-  const config = loadConfig(stateDir);
-  const workspace = flags.workspace || config.workspace || process.cwd();
   const dryRun = Boolean(flags["dry-run"]);
   const enable = Boolean(flags.enable);
+  const migrate = Boolean(flags.migrate);
 
-  const res = installSystemdService({ workspace, dryRun, enable });
+  const res = installSystemdService({ dryRun, enable, migrate });
+
+  for (const w of res.warnings || []) {
+    console.warn(`⚠ ${w}`);
+  }
+
+  if (res.gatewayServiceMissing) {
+    console.error(`✗ ${res.message}`);
+    process.exit(1);
+  }
+
+  if (res.legacyServiceExists && !migrate) {
+    console.warn(`⚠ Legacy openclaw-sub.service detected at ${res.legacyServicePath}`);
+    console.warn("  Run with --migrate to disable it and avoid port 18789 conflicts.");
+  }
 
   if (dryRun) {
-    console.log("🦞 clawsub install-systemd (dry-run)\n");
-    console.log(`Service file: ${res.servicePath}\n`);
+    console.log("clawsub install-systemd (dry-run)\n");
+    console.log(`Drop-in file: ${res.servicePath}\n`);
     console.log(res.content);
+    if (migrate && res.legacyServiceExists) {
+      console.log(`Legacy openclaw-sub.service detected at: ${res.legacyServicePath}`);
+      console.log("Commands that would run to migrate:");
+      console.log("  $ systemctl --user disable openclaw-sub");
+      console.log("  $ systemctl --user stop openclaw-sub");
+    }
     console.log("Run these commands after writing the file:");
     for (const cmd of res.lingerInstructions) {
       console.log(`  $ ${cmd}`);
@@ -260,15 +274,24 @@ function cmdInstallSystemd(flags) {
     return;
   }
 
-  console.log(`✓ Wrote systemd user service: ${res.servicePath}\n`);
+  console.log(`✓ Wrote drop-in conf: ${res.servicePath}\n`);
 
   if (enable && res.enableResult) {
     if (res.enableResult.reloaded) console.log("✓ systemctl --user daemon-reload succeeded");
-    if (res.enableResult.enabled) console.log("✓ systemctl --user enable openclaw-sub succeeded");
+    if (res.enableResult.restarted) console.log("✓ systemctl --user restart openclaw-gateway succeeded");
     for (const err of res.enableResult.errors) {
       console.error(`✗ ${err}`);
     }
     if (res.enableResult.errors.length > 0) process.exitCode = 1;
+  }
+
+  if (migrate && res.migrateResult) {
+    if (res.migrateResult.disabled) console.log("✓ systemctl --user disable openclaw-sub succeeded");
+    if (res.migrateResult.stopped) console.log("✓ systemctl --user stop openclaw-sub succeeded");
+    for (const err of res.migrateResult.errors) {
+      console.error(`✗ ${err}`);
+    }
+    if (res.migrateResult.errors.length > 0) process.exitCode = 1;
   }
 
   console.log("To complete setup and survive reboots and SSH disconnects, run:");

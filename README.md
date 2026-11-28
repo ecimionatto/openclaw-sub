@@ -72,6 +72,36 @@ OPENCLAW_VERSION=2026.11.0 CLAWSUB_CHAIN=claude,codex,agy \
   curl -fsSL https://raw.githubusercontent.com/ecimionatto/openclaw-sub/main/scripts/install-ubuntu.sh | bash
 ```
 
+#### VPS / headless systemd setup
+
+After `openclaw gateway install` creates `~/.config/systemd/user/openclaw-gateway.service`, install the clawsub PATH drop-in so the failover chain resolves `claude`, `codex`, `agy`, `gemini` correctly under systemd (which does not inherit your login shell's PATH):
+
+```bash
+# Dry-run to preview the drop-in and PATH
+npx openclaw-sub install-systemd --dry-run
+
+# If you have a legacy openclaw-sub.service from a previous install, use --migrate
+# (run this INSTEAD of --enable alone — prevents a port 18789 conflict):
+npx openclaw-sub install-systemd --enable --migrate
+
+# Fresh install (no legacy service): write the drop-in and restart openclaw-gateway
+npx openclaw-sub install-systemd --enable
+```
+
+The drop-in is written to `~/.config/systemd/user/openclaw-gateway.service.d/clawsub.conf` and contains only:
+
+```ini
+[Service]
+Environment="PATH=/home/user/.local/bin:/home/user/.nvm/versions/node/v22/bin:/usr/local/bin:/usr/bin:/bin"
+```
+
+**Linger** (auto-start on boot without a login session) must be enabled once per user:
+```bash
+loginctl enable-linger $USER
+```
+
+clawsub warns automatically when linger is off or `XDG_RUNTIME_DIR` is unset.
+
 ### Option B: Existing Node.js / OpenClaw Machine (`npx`)
 
 ```bash
