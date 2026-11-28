@@ -53,5 +53,5 @@
 
 ## v1.0 blockers (must fix before shipping)
 
-- [ ] **CS-27 / SC-07 KNOWN_BLOCKER**: `clawsub init` overwrites `openclaw.json` with a generated integration config without merging existing user-defined keys. User keys (e.g. custom plugins, provider overrides) survive only in the timestamped `.bak.*` backup. Init must read the existing `openclaw.json`, deep-merge user keys over generated defaults, and write the merged result so users do not lose their settings on re-init. Scenario 07-init-idempotent.sh is blocked until this is fixed.
+- [x] **CS-27 / SC-07 RESOLVED**: `clawsub init` now deep-merges existing user keys from `openclaw.json` instead of overwriting them. Scenario 07-init-idempotent.sh passes.
 - [ ] **CS-28 / SC-08 KNOWN_BLOCKER**: `clawsub` has no `uninstall` subcommand. A proper `clawsub uninstall` command is needed that removes shims, the router wrapper, and the OpenClaw profile entry, then restores the most-recent `openclaw.json.bak.*` backup. Scenario 08-uninstall-rollback.sh is blocked until this is fixed.
