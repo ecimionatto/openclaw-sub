@@ -76,7 +76,8 @@ export function routePrompt(prompt, opts = {}) {
     }
   }
 
-  const chain = opts.onlyProvider ? [opts.onlyProvider] : config.chain || ["claude", "codex", "agy"];
+  const chain = (opts.onlyProvider ? [opts.onlyProvider] : config.chain || ["claude", "codex", "agy"])
+    .map((e) => (typeof e === "string" ? e : e.provider));
   const attempts = [];
 
   for (const providerId of chain) {

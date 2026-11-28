@@ -102,7 +102,16 @@ function readStdinIfPiped() {
 
 function cmdInit(flags) {
   const stateDir = getDefaultStateDir();
-  const existing = loadConfig(stateDir);
+  let existing;
+  try {
+    existing = loadConfig(stateDir);
+  } catch (err) {
+    if (!flags.chain) {
+      console.error(`Error loading existing config: ${err.message}`);
+      process.exit(1);
+    }
+    existing = {};
+  }
   const rawChain = flags.chain
     ? String(flags.chain)
         .split(",")
@@ -172,7 +181,7 @@ function cmdInit(flags) {
   const saved = saveConfig(
     {
       ...existing,
-      chain: chainProviderIds,
+      chain: requestedChain,
       failover: normalized.failover,
       workspace,
     },
@@ -180,7 +189,7 @@ function cmdInit(flags) {
   );
   const integration = generateOpenClawIntegration({
     stateDir,
-    chain: saved.chain,
+    chain: saved.chain.map((e) => (typeof e === "string" ? e : e.provider)),
     workspace: saved.workspace,
   });
   const snap = recordVersionSnapshot(stateDir, "init");
@@ -445,7 +454,7 @@ function cmdTest(flags) {
       process.exit(1);
     }
   } else {
-    chain = config.chain || ["claude", "codex", "agy"];
+    chain = (config.chain || ["claude", "codex", "agy"]).map((e) => (typeof e === "string" ? e : e.provider));
   }
 
   console.log(`🧪 Testing subscription CLI chain: ${chain.join(" -> ")}\n`);

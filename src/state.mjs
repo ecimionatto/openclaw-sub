@@ -108,11 +108,8 @@ export function loadConfig(stateDir = getDefaultStateDir()) {
     return { ...DEFAULT_CONFIG };
   }
   const merged = { ...DEFAULT_CONFIG, ...raw };
-  if (merged.chain && merged.chain.length > 0) {
-    const validated = normalizeChain(merged);
-    return { ...merged, chain: validated.chain.map((e) => e.provider), failover: validated.failover };
-  }
-  return merged;
+  const validated = normalizeChain(merged);
+  return { ...merged, chain: validated.chain, failover: validated.failover };
 }
 
 export function saveConfig(config, stateDir = getDefaultStateDir()) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -168,7 +169,7 @@ test("loadConfig: throws on unknown provider in saved config", () => {
   }
 });
 
-test("loadConfig: returns valid string chain on success", () => {
+test("loadConfig: returns normalized entry objects on success", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
   try {
     fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
@@ -178,8 +179,122 @@ test("loadConfig: returns valid string chain on success", () => {
       "utf8"
     );
     const config = loadConfig(path.join(tmpDir, "claw"));
-    assert.deepEqual(config.chain, ["claude", "codex"]);
+    assert.equal(config.chain.length, 2);
+    assert.equal(config.chain[0].provider, "claude");
+    assert.equal(config.chain[0].key, "claude");
+    assert.equal(config.chain[1].provider, "codex");
     assert.equal(config.failover, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: throws on empty chain array", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: [] }),
+      "utf8"
+    );
+    assert.throws(() => loadConfig(path.join(tmpDir, "claw")), /empty/i);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: preserves model and optional on round-trip", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: [{ provider: "claude", model: "opus", optional: false }, { provider: "agy", optional: true }] }),
+      "utf8"
+    );
+    const config = loadConfig(path.join(tmpDir, "claw"));
+    assert.equal(config.chain[0].provider, "claude");
+    assert.equal(config.chain[0].model, "opus");
+    assert.equal(config.chain[0].key, "claude:opus");
+    assert.equal(config.chain[1].optional, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig: two models same provider are not duplicates", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  try {
+    fs.mkdirSync(path.join(tmpDir, "claw"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "claw", "clawsub.json"),
+      JSON.stringify({ chain: [{ provider: "claude", model: "opus" }, { provider: "claude", model: "sonnet" }] }),
+      "utf8"
+    );
+    const config = loadConfig(path.join(tmpDir, "claw"));
+    assert.equal(config.chain.length, 2);
+    assert.equal(config.chain[0].key, "claude:opus");
+    assert.equal(config.chain[1].key, "claude:sonnet");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain saves full entry objects and reloads without error", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,codex,agy?"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+    );
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.chain.length, 3);
+    assert.equal(saved.chain[0].provider, "claude");
+    assert.equal(saved.chain[0].model, "opus");
+    assert.equal(saved.chain[1].provider, "codex");
+    assert.equal(saved.chain[2].provider, "agy");
+    assert.equal(saved.chain[2].optional, true);
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.chain.length, 3);
+    assert.equal(reloaded.chain[0].key, "claude:opus");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain claude:opus,claude:sonnet saves distinct entries and reloads without duplicate error", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,claude:sonnet"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+    );
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.chain.length, 2);
+    assert.equal(saved.chain[0].key, "claude:opus");
+    assert.equal(saved.chain[1].key, "claude:sonnet");
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.chain.length, 2);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit --chain with --no-failover saves failover=false and reloads correctly", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    execFileSync(
+      process.execPath,
+      [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude,codex", "--no-failover"],
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir }, encoding: "utf8" }
+    );
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.failover, false);
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.failover, false);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

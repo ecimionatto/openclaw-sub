@@ -17,7 +17,8 @@ import { getDefaultStateDir, getProviderCooldown, loadConfig, loadState } from "
 export function generateOpenClawIntegration(opts = {}) {
   const stateDir = opts.stateDir || getDefaultStateDir();
   const config = loadConfig(stateDir);
-  const chain = opts.chain || config.chain || ["claude", "codex", "agy"];
+  const chain = (opts.chain || config.chain || ["claude", "codex", "agy"])
+    .map((e) => (typeof e === "string" ? e : e.provider));
   const workspace = opts.workspace || config.workspace || process.cwd();
 
   const binDir = path.join(stateDir, "bin");
@@ -152,7 +153,7 @@ export function runDoctor(opts = {}) {
   const now = opts.now || new Date();
 
   const openclawBin = detectBinary("openclaw");
-  const chain = config.chain || ["claude", "codex", "agy"];
+  const chain = (config.chain || ["claude", "codex", "agy"]).map((e) => (typeof e === "string" ? e : e.provider));
   const providers = chain.map((id) => {
     const info = inspectProvider(id, { homeDir: opts.homeDir });
     const cooldown = getProviderCooldown(state, id, now);
