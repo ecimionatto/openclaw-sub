@@ -247,7 +247,7 @@ test("cmdInit --chain saves full entry objects and reloads without error", () =>
     execFileSync(
       process.execPath,
       [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,codex,agy?"],
-      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8" }
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir }
     );
     const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
     assert.equal(saved.chain.length, 3);
@@ -270,7 +270,7 @@ test("cmdInit --chain claude:opus,claude:sonnet saves distinct entries and reloa
     execFileSync(
       process.execPath,
       [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,claude:sonnet"],
-      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8" }
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir }
     );
     const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
     assert.equal(saved.chain.length, 2);
@@ -289,7 +289,7 @@ test("cmdInit --chain with --no-failover saves failover=false and reloads correc
     execFileSync(
       process.execPath,
       [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude,codex", "--no-failover"],
-      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8" }
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir }
     );
     const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
     assert.equal(saved.failover, false);
@@ -320,13 +320,35 @@ test("cmdInit --chain claude:opus,claude:sonnet --probe does not throw Duplicate
     execFileSync(
       process.execPath,
       [new URL("../bin/clawsub.mjs", import.meta.url).pathname, "init", "--chain", "claude:opus,claude:sonnet", "--probe"],
-      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", stdio: "pipe" }
+      { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", stdio: "pipe", cwd: tmpDir }
     );
   } catch (err) {
     const output = (err.stderr || "") + (err.stdout || "");
     if (output.includes("Duplicate chain entry")) {
       assert.fail(`init --probe with two claude models threw Duplicate chain entry: ${output}`);
     }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("cmdInit without --chain preserves full chain entries from previous init", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-init-test-"));
+  try {
+    const clawsubPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+    const opts = { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir };
+    execFileSync(process.execPath, [clawsubPath, "init", "--chain", "claude:opus,claude:sonnet?"], opts);
+    execFileSync(process.execPath, [clawsubPath, "init"], opts);
+    const saved = JSON.parse(fs.readFileSync(path.join(tmpDir, "clawsub.json"), "utf8"));
+    assert.equal(saved.chain.length, 2);
+    assert.equal(saved.chain[0].key, "claude:opus");
+    assert.equal(saved.chain[0].model, "opus");
+    assert.equal(saved.chain[1].key, "claude:sonnet");
+    assert.equal(saved.chain[1].optional, true);
+    const reloaded = loadConfig(tmpDir);
+    assert.equal(reloaded.chainEntries.length, 2);
+    assert.equal(reloaded.chainEntries[0].key, "claude:opus");
+    assert.equal(reloaded.chainEntries[1].optional, true);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

@@ -118,7 +118,7 @@ function cmdInit(flags) {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean)
-    : existing.chain || ["claude", "codex", "agy"];
+    : existing.chainEntries || existing.chain || ["claude", "codex", "agy"];
   const failover = flags["no-failover"] ? false : flags["failover"] ? true : (existing.failover !== undefined ? existing.failover : true);
 
   let normalized;
@@ -179,9 +179,10 @@ function cmdInit(flags) {
   }
 
   console.log("\n[3/5] Writing Subscription-Saver Config, Cooldown Shims & Version Snapshot...");
+  const { chainEntries: _ce, ...existingClean } = existing;
   const saved = saveConfig(
     {
-      ...existing,
+      ...existingClean,
       chain: requestedChain,
       failover: normalized.failover,
       workspace,
@@ -342,7 +343,7 @@ function cmdStatus(flags) {
   const state = loadState(stateDir);
   const now = new Date();
 
-  const rows = (config.chain || []).map((entry, idx) => {
+  const rows = (config.chainEntries || config.chain || []).map((entry, idx) => {
     const id = typeof entry === "string" ? entry : entry.provider;
     const entryKey = typeof entry === "string" ? entry : entry.key;
     const info = inspectProvider(id);
@@ -372,7 +373,7 @@ function cmdStatus(flags) {
       JSON.stringify(
         {
           clawsubVersion: CLAWSUB_VERSION,
-          chain: config.chain,
+          chain: config.chainEntries || config.chain,
           failover: config.failover !== undefined ? config.failover : true,
           workspace: config.workspace,
           lastActiveProvider: state.lastActiveProvider,
@@ -388,7 +389,7 @@ function cmdStatus(flags) {
   }
 
   console.log(`🦞 clawsub status (v${CLAWSUB_VERSION})\n`);
-  console.log(`Chain:               ${(config.chain || []).map((e) => (typeof e === "string" ? e : e.key)).join(" -> ")}`);
+  console.log(`Chain:               ${(config.chainEntries || config.chain || []).map((e) => (typeof e === "string" ? e : e.key)).join(" -> ")}`);
   console.log(`Workspace:           ${config.workspace}`);
   console.log(`Last Active CLI:     ${state.lastActiveProvider || "(none yet)"}`);
   console.log(`Quiet Windows:       ${(config.quietWindows || []).join(", ") || "none"}`);
