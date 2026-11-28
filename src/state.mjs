@@ -2,6 +2,56 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+export const KNOWN_PROVIDERS = ["claude", "codex", "agy", "ollama"];
+
+function normalizeEntry(raw) {
+  if (typeof raw === "string") {
+    let str = raw.trim();
+    const optional = str.endsWith("?");
+    if (optional) str = str.slice(0, -1);
+    const colonIdx = str.indexOf(":");
+    const provider = colonIdx >= 0 ? str.slice(0, colonIdx) : str;
+    const model = colonIdx >= 0 ? str.slice(colonIdx + 1) : undefined;
+    const key = model ? `${provider}:${model}` : provider;
+    return { key, provider, model, optional, failover: undefined, args: undefined };
+  }
+  if (typeof raw === "object" && raw !== null) {
+    const { provider, model, optional = false, failover, args } = raw;
+    const key = model ? `${provider}:${model}` : provider;
+    return { key, provider, model, optional, failover, args };
+  }
+  throw new Error(`Invalid chain entry: ${JSON.stringify(raw)}`);
+}
+
+export function normalizeChain(config) {
+  const rawChain = config.chain || [];
+  const failover = config.failover !== undefined ? Boolean(config.failover) : true;
+
+  if (rawChain.length === 0) {
+    throw new Error("chain must not be empty");
+  }
+
+  const entries = rawChain.map((raw, i) => {
+    const entry = normalizeEntry(raw);
+    if (!KNOWN_PROVIDERS.includes(entry.provider)) {
+      throw new Error(
+        `Unknown provider "${entry.provider}" at chain[${i}]. Known providers: ${KNOWN_PROVIDERS.join(", ")}`
+      );
+    }
+    return entry;
+  });
+
+  const seen = new Set();
+  for (const entry of entries) {
+    if (seen.has(entry.key)) {
+      throw new Error(`Duplicate chain entry "${entry.key}"`);
+    }
+    seen.add(entry.key);
+  }
+
+  return { ...config, chain: entries, failover };
+}
+
 export const DEFAULT_CONFIG = {
   chain: ["claude", "codex", "agy"],
   workspace: process.cwd(),
