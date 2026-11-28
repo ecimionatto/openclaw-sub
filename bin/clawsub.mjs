@@ -50,6 +50,7 @@ Usage:
   clawsub run [--session <key>] <prompt>
   clawsub exec <provider> [--session <key>] [--] <prompt>
   clawsub test [--chain claude,codex,agy]
+  clawsub uninstall [--dry-run]
   clawsub reset [provider]
   clawsub help
 
@@ -462,6 +463,43 @@ function cmdTest(flags) {
   }
 }
 
+function cmdUninstall(flags) {
+  const stateDir = getDefaultStateDir();
+  const dryRun = Boolean(flags["dry-run"]);
+
+  const openclawJsonPath = path.join(stateDir, "openclaw.json");
+  const backups = fs.existsSync(stateDir)
+    ? fs.readdirSync(stateDir)
+        .filter((f) => f.startsWith("openclaw.json.bak."))
+        .sort()
+    : [];
+
+  if (backups.length === 0) {
+    console.error("✗ No openclaw.json backup found — nothing to restore");
+    process.exit(1);
+  }
+
+  const latestBackup = path.join(stateDir, backups[backups.length - 1]);
+
+  if (dryRun) {
+    console.log(`🦞 clawsub uninstall (dry-run)\nWould restore: ${latestBackup} → ${openclawJsonPath}`);
+    return;
+  }
+
+  fs.copyFileSync(latestBackup, openclawJsonPath);
+  console.log(`✓ Restored openclaw.json from ${latestBackup}`);
+
+  const binDir = path.join(stateDir, "bin");
+  if (fs.existsSync(binDir)) {
+    for (const f of fs.readdirSync(binDir)) {
+      if (f.startsWith("clawsub-")) {
+        fs.rmSync(path.join(binDir, f));
+      }
+    }
+    console.log("✓ Removed clawsub shims");
+  }
+}
+
 function cmdReset(targetProvider) {
   const stateDir = getDefaultStateDir();
   const state = loadState(stateDir);
@@ -644,6 +682,11 @@ function main() {
 
   if (subcmd === "test") {
     cmdTest(flags);
+    return;
+  }
+
+  if (subcmd === "uninstall") {
+    cmdUninstall(flags);
     return;
   }
 

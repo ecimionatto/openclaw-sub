@@ -22,6 +22,13 @@ node -e "const d=JSON.parse(require('fs').readFileSync('$BATON','utf8'));
   if(!s.turns||s.turns.length===0){console.error('turns empty after first run');process.exit(1)}" \
   || fail "baton does not record turns from first run"
 
+node -e "const d=JSON.parse(require('fs').readFileSync('$BATON','utf8'));
+  const s=d.sessions?.myws;
+  const t=s.turns&&s.turns[0];
+  if(!t||!t.prompt){console.error('first turn has no prompt field');process.exit(1)}
+  if(!t.prompt.includes('first turn')){console.error('first turn prompt not preserved: '+t.prompt);process.exit(1)}" \
+  || fail "baton does not preserve prompt content from first turn"
+
 export STUB_CODEX_MODE=limit
 export STUB_AGY_MODE=ok
 "$CLAWSUB" run --session myws "second turn" >/dev/null 2>&1 || fail "second run failed"
@@ -35,6 +42,12 @@ node -e "const d=JSON.parse(require('fs').readFileSync('$BATON','utf8'));
   const s=d.sessions?.myws;
   if(!s.turns||s.turns.length<2){console.error('expected >=2 turns, got:'+(s.turns?.length));process.exit(1)}" \
   || fail "baton did not retain earlier turns across provider switch"
+
+node -e "const d=JSON.parse(require('fs').readFileSync('$BATON','utf8'));
+  const s=d.sessions?.myws;
+  const first=s.turns&&s.turns.find(t=>t.prompt&&t.prompt.includes('first turn'));
+  if(!first){console.error('first turn prompt not found after switch; turns='+JSON.stringify((s.turns||[]).map(t=>t.prompt)));process.exit(1)}" \
+  || fail "earlier turn prompt lost after provider switch"
 
 export STUB_CLAUDE_MODE=ok
 export STUB_CODEX_MODE=ok

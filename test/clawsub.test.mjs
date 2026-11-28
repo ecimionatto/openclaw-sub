@@ -1543,6 +1543,37 @@ test("init does not reset provider cooldown or auth_expired state", () => {
   }
 });
 
+test("clawsub uninstall restores openclaw.json from backup", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-test-"));
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-home-"));
+  try {
+    const original = JSON.stringify({ provider: "original", custom: true });
+    fs.writeFileSync(path.join(tmp, "openclaw.json"), original);
+
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const initResult = spawnSync(process.execPath, ["./bin/clawsub.mjs", "init", "--chain", "claude,codex"], {
+      cwd: repoRoot,
+      env: { ...process.env, CLAWSUB_HOME: tmp, HOME: fakeHome },
+    });
+    assert.equal(initResult.status, 0, `clawsub init exited non-zero: ${initResult.stderr?.toString()}`);
+
+    const backups = fs.readdirSync(tmp).filter((f) => f.startsWith("openclaw.json.bak."));
+    assert.ok(backups.length > 0, "init must create an openclaw.json backup");
+
+    const uninstallResult = spawnSync(process.execPath, ["./bin/clawsub.mjs", "uninstall"], {
+      cwd: repoRoot,
+      env: { ...process.env, CLAWSUB_HOME: tmp, HOME: fakeHome },
+    });
+    assert.equal(uninstallResult.status, 0, `clawsub uninstall exited non-zero: ${uninstallResult.stderr?.toString()}`);
+
+    const restored = fs.readFileSync(path.join(tmp, "openclaw.json"), "utf8");
+    assert.equal(restored, original, "uninstall must restore the original openclaw.json content");
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+    fs.rmSync(fakeHome, { recursive: true });
+  }
+});
+
 test("guard: every scenario fail() function exits non-zero", () => {
   const scenariosDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "e2e/scenarios");
   const scripts = fs.readdirSync(scenariosDir).filter((f) => /^\d{2}-.*\.sh$/.test(f));

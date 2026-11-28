@@ -54,4 +54,4 @@
 ## v1.0 blockers (must fix before shipping)
 
 - [x] **CS-27 / SC-07 RESOLVED**: `clawsub init` now deep-merges existing user keys from `openclaw.json` instead of overwriting them. Scenario 07-init-idempotent.sh passes.
-- [ ] **CS-28 / SC-08 KNOWN_BLOCKER**: `clawsub` has no `uninstall` subcommand. A proper `clawsub uninstall` command is needed that removes shims, the router wrapper, and the OpenClaw profile entry, then restores the most-recent `openclaw.json.bak.*` backup. Scenario 08-uninstall-rollback.sh is blocked until this is fixed.
+- [x] **CS-28 / SC-08 RESOLVED**: `clawsub uninstall` implemented — restores the most-recent `openclaw.json.bak.*` backup and removes shims. Scenario 08-uninstall-rollback.sh passes.
