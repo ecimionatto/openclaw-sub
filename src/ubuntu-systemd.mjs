@@ -106,6 +106,8 @@ export function installSystemdService({
 
   if (lingerEnabled === false) {
     warnings.push(`Linger is disabled for ${username} — run: loginctl enable-linger ${username}`);
+  } else if (lingerEnabled === null) {
+    warnings.push(`Linger status unknown for ${username} — confirm with: loginctl show-user ${username} -p Linger`);
   }
 
   const lingerInstructions = [
@@ -147,22 +149,6 @@ export function installSystemdService({
   fs.mkdirSync(dropInDir, { recursive: true });
   fs.writeFileSync(suggestedPath, content, { mode: 0o644 });
 
-  const enableResult = { reloaded: false, restarted: false, errors: [] };
-  if (enable) {
-    try {
-      shellRun("systemctl --user daemon-reload");
-      enableResult.reloaded = true;
-    } catch (err) {
-      enableResult.errors.push(`daemon-reload failed: ${err.message}`);
-    }
-    try {
-      shellRun("systemctl --user restart openclaw-gateway");
-      enableResult.restarted = true;
-    } catch (err) {
-      enableResult.errors.push(`restart openclaw-gateway failed: ${err.message}`);
-    }
-  }
-
   const migrateResult = { disabled: false, stopped: false, errors: [] };
   if (migrate && legacyServiceExists) {
     try {
@@ -176,6 +162,22 @@ export function installSystemdService({
       migrateResult.stopped = true;
     } catch (err) {
       migrateResult.errors.push(`stop openclaw-sub failed: ${err.message}`);
+    }
+  }
+
+  const enableResult = { reloaded: false, restarted: false, errors: [] };
+  if (enable) {
+    try {
+      shellRun("systemctl --user daemon-reload");
+      enableResult.reloaded = true;
+    } catch (err) {
+      enableResult.errors.push(`daemon-reload failed: ${err.message}`);
+    }
+    try {
+      shellRun("systemctl --user restart openclaw-gateway");
+      enableResult.restarted = true;
+    } catch (err) {
+      enableResult.errors.push(`restart openclaw-gateway failed: ${err.message}`);
     }
   }
 

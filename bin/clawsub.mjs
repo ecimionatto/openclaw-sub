@@ -261,6 +261,12 @@ function cmdInstallSystemd(flags) {
     console.log("clawsub install-systemd (dry-run)\n");
     console.log(`Drop-in file: ${res.servicePath}\n`);
     console.log(res.content);
+    if (migrate && res.legacyServiceExists) {
+      console.log(`Legacy openclaw-sub.service detected at: ${res.legacyServicePath}`);
+      console.log("Commands that would run to migrate:");
+      console.log("  $ systemctl --user disable openclaw-sub");
+      console.log("  $ systemctl --user stop openclaw-sub");
+    }
     console.log("Run these commands after writing the file:");
     for (const cmd of res.lingerInstructions) {
       console.log(`  $ ${cmd}`);
@@ -285,6 +291,7 @@ function cmdInstallSystemd(flags) {
     for (const err of res.migrateResult.errors) {
       console.error(`✗ ${err}`);
     }
+    if (res.migrateResult.errors.length > 0) process.exitCode = 1;
   }
 
   console.log("To complete setup and survive reboots and SSH disconnects, run:");

@@ -713,6 +713,9 @@ test("installSystemdService with enable=true calls daemon-reload and restart ope
   });
   assert.equal(dryResult.dryRun, true);
   assert.ok(!called.includes("systemctl --user daemon-reload"), "dry-run must not call daemon-reload");
+  assert.ok(!called.includes("systemctl --user restart openclaw-gateway"), "dry-run must not call restart");
+  assert.ok(!called.includes("systemctl --user disable openclaw-sub"), "dry-run must not call disable");
+  assert.ok(!called.includes("systemctl --user stop openclaw-sub"), "dry-run must not call stop");
 });
 
 test("installSystemdService with enable=true reports runner failures in enableResult.errors", () => {
@@ -845,6 +848,95 @@ test("installSystemdService --migrate disables and stops legacy openclaw-sub.ser
   assert.ok(called.includes("systemctl --user stop openclaw-sub"), "must stop legacy service");
   assert.equal(result.migrateResult.disabled, true);
   assert.equal(result.migrateResult.stopped, true);
+});
+
+test("resolvePATHDirs includes each tool dir and npm global bin, dedupes shared dirs", () => {
+  const fakeRunner = (cmd) => {
+    if (cmd.includes("which claude")) return "/home/u/.mise/shims/claude";
+    if (cmd.includes("which codex")) return "/home/u/.npm-global/bin/codex";
+    if (cmd.includes("which agy")) return "/opt/agy/bin/agy";
+    if (cmd.includes("which gemini")) return "/home/u/.npm-global/bin/gemini";
+    if (/npm config get prefix/.test(cmd)) return "/home/u/.npm-global";
+    throw new Error("not found");
+  };
+  const dirs = resolvePATHDirs({ nodeBinDir: "/usr/local/bin", homeDir: "/tmp/fakehome2", runner: fakeRunner });
+  assert.ok(dirs.includes("/home/u/.mise/shims"), "claude dir must be included");
+  assert.ok(dirs.includes("/home/u/.npm-global/bin"), "codex/gemini dir must be included");
+  assert.ok(dirs.includes("/opt/agy/bin"), "agy dir must be included");
+  const count = dirs.filter((d) => d === "/home/u/.npm-global/bin").length;
+  assert.equal(count, 1, "deduped dir must appear exactly once");
+  const unique = new Set(dirs);
+  assert.equal(dirs.length, unique.size, "no duplicates in PATH dirs");
+});
+
+test("installSystemdService with enable=true and migrate=true stops legacy before restarting gateway", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-order-"));
+  const legacyDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const callOrder = [];
+  const fakeRunner = (cmd) => { callOrder.push(cmd); };
+
+  installSystemdService({
+    nodeBinDir: "/usr/local/bin",
+    dryRun: false,
+    enable: true,
+    migrate: true,
+    homeDir: tmpDir,
+    runner: fakeRunner,
+    checkGateway: false,
+  });
+
+  const disableIdx = callOrder.indexOf("systemctl --user disable openclaw-sub");
+  const stopIdx = callOrder.indexOf("systemctl --user stop openclaw-sub");
+  const reloadIdx = callOrder.indexOf("systemctl --user daemon-reload");
+  const restartIdx = callOrder.indexOf("systemctl --user restart openclaw-gateway");
+
+  assert.ok(disableIdx !== -1, "must call disable");
+  assert.ok(stopIdx !== -1, "must call stop");
+  assert.ok(reloadIdx !== -1, "must call daemon-reload");
+  assert.ok(restartIdx !== -1, "must call restart");
+  assert.ok(disableIdx < reloadIdx, "disable must come before daemon-reload");
+  assert.ok(stopIdx < reloadIdx, "stop must come before daemon-reload");
+  assert.ok(disableIdx < restartIdx, "disable must come before restart");
+  assert.ok(stopIdx < restartIdx, "stop must come before restart");
+});
+
+test("install-systemd --migrate exits 1 when disable/stop fails", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-migrate-exit1-"));
+  const fakeSystemctl = path.join(tmpDir, "systemctl");
+  fs.writeFileSync(fakeSystemctl, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const gatewayDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(gatewayDir, { recursive: true });
+  fs.writeFileSync(path.join(gatewayDir, "openclaw-gateway.service"), "[Unit]\nDescription=gateway\n");
+  fs.writeFileSync(path.join(gatewayDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--migrate"],
+    { env: { ...process.env, HOME: tmpDir, PATH: `${tmpDir}:${process.env.PATH}` }, encoding: "utf8" }
+  );
+  assert.equal(result.status, 1, "exit code must be 1 when disable or stop fails");
+});
+
+test("install-systemd --dry-run --migrate prints legacy service path and disable/stop commands", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-drymigrate-"));
+  const legacyDir = path.join(tmpDir, ".config", "systemd", "user");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "openclaw-gateway.service"), "[Unit]\nDescription=gateway\n");
+  fs.writeFileSync(path.join(legacyDir, "openclaw-sub.service"), "[Unit]\nDescription=legacy\n");
+
+  const binPath = fileURLToPath(new URL("../bin/clawsub.mjs", import.meta.url));
+  const result = spawnSync(
+    process.execPath,
+    [binPath, "install-systemd", "--dry-run", "--migrate"],
+    { env: { ...process.env, HOME: tmpDir }, encoding: "utf8" }
+  );
+  assert.ok(result.stdout.includes("openclaw-sub.service"), "must mention legacy service path");
+  assert.ok(result.stdout.includes("disable openclaw-sub"), "must show disable command");
+  assert.ok(result.stdout.includes("stop openclaw-sub"), "must show stop command");
 });
 
 test("installSystemdService returns gatewayServiceMissing when openclaw-gateway.service absent", () => {
