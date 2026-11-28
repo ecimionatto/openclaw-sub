@@ -52,15 +52,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Serialize releases: only one release runs at a time.
-    # With cancel-in-progress: false the in-progress run always finishes; a queued
-    # pending run is replaced by a newer push. Each run releases exactly its own
-    # tested SHA independently, so being superseded is safe.
+    # Serialize releases so only one runs at a time; in-progress run always
+    # finishes before a queued run starts.
     concurrency:
-      group: release
+      group: cd-main
       cancel-in-progress: false
     outputs:
       version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.guard.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,45 +70,43 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Detect existing release tag for this SHA
-        id: existing_tag
+      - name: Release guard
+        id: guard
         run: |
-          TAG=$(git tag --points-at "$GITHUB_SHA" | grep '^v' | head -1)
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          if [ -n "$TAG" ]; then
-            echo "SHA $GITHUB_SHA already tagged as $TAG — will reuse"
+          # If this SHA already carries a v* tag it was released in a prior run; skip.
+          EXISTING=$(git tag --contains "$GITHUB_SHA" --list 'v*' | head -1)
+          if [ -n "$EXISTING" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_SHA already tagged as $EXISTING — skipping"
+            exit 0
           fi
-          # If this SHA is an ancestor of an already-released tag, a newer merge beat us;
-          # skip to avoid publishing older code under a version tag it doesn't match.
-          LATEST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$LATEST_TAG" ] && [ -z "$TAG" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$LATEST_TAG" 2>/dev/null; then
-            echo "skip_release=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$GITHUB_SHA is an ancestor of $LATEST_TAG — skipping release for superseded SHA"
-          else
-            echo "skip_release=false" >> "$GITHUB_OUTPUT"
+
+          # If origin/main has moved past this SHA a newer merge beat us; skip.
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::origin/main has moved past $GITHUB_SHA — skipping superseded release"
+            exit 0
           fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Compute next version
         id: version
-        if: steps.existing_tag.outputs.skip_release != 'true'
+        if: steps.guard.outputs.skip != 'true'
         run: |
-          if [ -n "${{ steps.existing_tag.outputs.tag }}" ]; then
-            VERSION="${{ steps.existing_tag.outputs.tag }}"
-            VERSION="${VERSION#v}"
+          SINCE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$SINCE" ]; then
+            VERSION=$(node scripts/next-version.mjs --current "$SINCE" --since "$SINCE")
           else
-            SINCE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-            if [ -n "$SINCE" ]; then
-              VERSION=$(node scripts/next-version.mjs --current "$SINCE" --since "$SINCE")
-            else
-              CURRENT=$(node -e "process.stdout.write(require('./package.json').version)")
-              VERSION=$(node scripts/next-version.mjs --current "$CURRENT")
-            fi
+            CURRENT=$(node -e "process.stdout.write(require('./package.json').version)")
+            VERSION=$(node scripts/next-version.mjs --current "$CURRENT")
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Next version: $VERSION"
 
       - name: Tag tested SHA and push
-        if: steps.existing_tag.outputs.skip_release != 'true'
+        if: steps.guard.outputs.skip != 'true'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
@@ -117,16 +114,17 @@ jobs:
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             EXISTING_SHA=$(git rev-list -1 "$TAG")
             if [ "$EXISTING_SHA" != "$GITHUB_SHA" ]; then
-              echo "::notice::Tag $TAG already exists on $EXISTING_SHA (not $GITHUB_SHA) — skipping release for this SHA"
-              exit 0
+              echo "::error::Tag $TAG already exists on $EXISTING_SHA (not $GITHUB_SHA) — version collision"
+              exit 1
             fi
-            echo "Tag $TAG already exists on this SHA — skipping"
+            echo "Tag $TAG already exists on this SHA — skipping tag push"
           else
             git tag "$TAG" "$GITHUB_SHA"
             git push origin "$TAG"
           fi
 
       - name: Set package.json version for publish
+        if: steps.guard.outputs.skip != 'true'
         run: |
           node -e "
             const fs = require('fs');
@@ -136,6 +134,7 @@ jobs:
           "
 
       - name: Create GitHub Release
+        if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -150,6 +149,7 @@ jobs:
           fi
 
       - name: Publish to npm --tag next
+        if: steps.guard.outputs.skip != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -170,6 +170,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     environment: production
+    if: needs.release.outputs.skip != 'true'
     steps:
       - uses: actions/setup-node@v4
         with:
