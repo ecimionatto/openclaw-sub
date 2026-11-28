@@ -353,3 +353,37 @@ test("cmdInit without --chain preserves full chain entries from previous init", 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("cmdStatus shows chainEntries-based chain line and JSON output with key/model/optional/failover", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsub-status-test-"));
+  try {
+    const clawsubPath = new URL("../bin/clawsub.mjs", import.meta.url).pathname;
+    const opts = { env: { ...process.env, CLAWSUB_HOME: tmpDir, HOME: tmpDir }, encoding: "utf8", cwd: tmpDir };
+    execFileSync(process.execPath, [clawsubPath, "init", "--chain", "claude:opus,claude:sonnet?", "--no-failover"], opts);
+
+    const textOut = execFileSync(
+      process.execPath,
+      [clawsubPath, "status"],
+      { ...opts, stdio: ["pipe", "pipe", "pipe"] }
+    );
+    assert.ok(textOut.includes("claude:opus -> claude:sonnet"), `Chain line missing expected keys; got: ${textOut}`);
+
+    const jsonOut = JSON.parse(execFileSync(
+      process.execPath,
+      [clawsubPath, "status", "--json"],
+      { ...opts, stdio: ["pipe", "pipe", "pipe"] }
+    ));
+    assert.equal(jsonOut.failover, false, "failover should be false");
+    assert.ok(Array.isArray(jsonOut.chain), "chain should be an array");
+    assert.equal(jsonOut.chain.length, 2);
+    const first = jsonOut.chain[0];
+    assert.equal(first.key, "claude:opus");
+    assert.equal(first.model, "opus");
+    assert.equal(first.optional, false);
+    const second = jsonOut.chain[1];
+    assert.equal(second.key, "claude:sonnet");
+    assert.equal(second.optional, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
