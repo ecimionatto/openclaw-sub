@@ -80,16 +80,21 @@ export function routePrompt(prompt, opts = {}) {
   const attempts = [];
 
   for (const providerId of chain) {
-    const provider = PROVIDERS[providerId];
+    // Support "provider:model" chain entries (e.g. "claude:opus")
+    const colonIdx = providerId.indexOf(":");
+    const baseId = colonIdx === -1 ? providerId : providerId.slice(0, colonIdx);
+    const chainModel = colonIdx === -1 ? undefined : providerId.slice(colonIdx + 1);
+
+    const provider = PROVIDERS[baseId];
     if (!provider) {
       attempts.push({ provider: providerId, status: "unknown_provider" });
       continue;
     }
 
     // 2. Fast-skip providers currently in active quota cooldown (0ms overhead)
-    const cd = getProviderCooldown(state, providerId, now);
+    const cd = getProviderCooldown(state, baseId, now);
     if (cd.coolingDown) {
-      const pState = state.providers?.[providerId] || {};
+      const pState = state.providers?.[baseId] || {};
       const authExpired = pState.status === "auth_expired";
       attempts.push({
         provider: providerId,
@@ -106,7 +111,7 @@ export function routePrompt(prompt, opts = {}) {
       !heartbeat && config.enableSessionBaton !== false
         ? injectSessionBaton(batonStore, {
             sessionKey,
-            targetProvider: providerId,
+            targetProvider: baseId,
             prompt,
           })
         : { prompt, handoffInjected: false, header: null };
@@ -114,7 +119,8 @@ export function routePrompt(prompt, opts = {}) {
     // 4. Build and execute the headless CLI command
     const cmdSpec = provider.buildCommand(baton.prompt, {
       workspace: config.workspace,
-      ...(config.providerOptions?.[providerId] || {}),
+      ...(chainModel && { model: chainModel }),
+      ...(config.providerOptions?.[baseId] || {}),
     });
 
     const result = runner({
@@ -127,13 +133,13 @@ export function routePrompt(prompt, opts = {}) {
     // 5a. Check for auth/credential failure -> 6h cooldown, remediation hint
     if ((result.exitCode !== 0 || result.error) && isAuthError(combinedOutput)) {
       const until = new Date(now.getTime() + 6 * 3600_000);
-      state.providers[providerId] = {
-        ...(state.providers[providerId] || {}),
+      state.providers[baseId] = {
+        ...(state.providers[baseId] || {}),
         status: "auth_expired",
         cooldownUntil: until.toISOString(),
         lastErrorAt: now.toISOString(),
         lastError: combinedOutput.slice(-400),
-        remediation: `openclaw models auth login --provider ${providerId} --force`,
+        remediation: `openclaw models auth login --provider ${baseId} --force`,
       };
       if (stateDir || !opts.state) {
         saveState(state, stateDir);
@@ -142,7 +148,7 @@ export function routePrompt(prompt, opts = {}) {
         provider: providerId,
         status: "auth_expired",
         cooldownUntil: until.toISOString(),
-        remediation: `openclaw models auth login --provider ${providerId} --force`,
+        remediation: `openclaw models auth login --provider ${baseId} --force`,
       });
       continue;
     }
@@ -154,7 +160,7 @@ export function routePrompt(prompt, opts = {}) {
         defaultMinutes: config.defaultCooldownMinutes ?? 60,
         bufferMinutes: config.cooldownBufferMinutes ?? 5,
       });
-      state.providers[providerId] = {
+      state.providers[baseId] = {
         status: "cooldown",
         cooldownUntil: until.toISOString(),
         resetAt: until.toISOString(),
@@ -166,7 +172,7 @@ export function routePrompt(prompt, opts = {}) {
       if (!heartbeat && config.enableSessionBaton !== false) {
         recordMidTurnCreditExhaustion(batonStore, {
           sessionKey,
-          failedProvider: providerId,
+          failedProvider: baseId,
           prompt,
           partialOutput: result.stdout || "",
           cwd: config.workspace,
@@ -192,8 +198,8 @@ export function routePrompt(prompt, opts = {}) {
 
     // 6. Non-quota execution failure -> record and fail over to next CLI
     if (result.exitCode !== 0 || !result.stdout) {
-      state.providers[providerId] = {
-        ...(state.providers[providerId] || {}),
+      state.providers[baseId] = {
+        ...(state.providers[baseId] || {}),
         status: "error",
         lastErrorAt: now.toISOString(),
         lastError: combinedOutput.slice(-400) || `exit code ${result.exitCode}`,
@@ -211,13 +217,13 @@ export function routePrompt(prompt, opts = {}) {
     }
 
     // 7. Success! Clear any stale cooldown, record completed turn in Shared Session Baton, and return
-    state.providers[providerId] = {
+    state.providers[baseId] = {
       status: "healthy",
       cooldownUntil: null,
       lastSuccessAt: now.toISOString(),
       lastLatencyMs: result.latencyMs,
     };
-    state.lastActiveProvider = providerId;
+    state.lastActiveProvider = baseId;
     if (stateDir || !opts.state) {
       saveState(state, stateDir);
     }
@@ -225,7 +231,7 @@ export function routePrompt(prompt, opts = {}) {
     if (!heartbeat && config.enableSessionBaton !== false && result.stdout !== "NO_REPLY") {
       recordCompletedTurn(batonStore, {
         sessionKey,
-        provider: providerId,
+        provider: baseId,
         prompt,
         response: result.stdout,
         now,
@@ -269,10 +275,11 @@ export function routePrompt(prompt, opts = {}) {
     };
   }
 
-  const authExpiredIds = chain.filter(
+  const baseIds = chain.map((id) => (id.includes(":") ? id.slice(0, id.indexOf(":")) : id));
+  const authExpiredIds = baseIds.filter(
     (id) => state.providers?.[id]?.status === "auth_expired"
   );
-  const quotaCooldowns = chain
+  const quotaCooldowns = baseIds
     .filter((id) => !authExpiredIds.includes(id))
     .map((id) => ({ id, ...getProviderCooldown(state, id, now) }))
     .filter((c) => c.coolingDown && c.until)
