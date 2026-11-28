@@ -1,1 +1,0 @@
-Quota exceeded. Daily quota resets at 1:00 AM UTC.

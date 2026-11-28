@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SC-07: init writes backup, preserves existing config, re-run is idempotent
+# KNOWN_BLOCKER=CS-27: clawsub init overwrites openclaw.json without merging user keys.
 set -euo pipefail
 pass() { echo "  PASS [$SCENARIO]: $1"; }
 fail() { echo "  FAIL [$SCENARIO]: $1"; exit 1; }
@@ -37,13 +38,8 @@ OPENCLAW_AFTER_SECOND=$(cat "$OPENCLAW_JSON")
 [ "$OPENCLAW_AFTER_FIRST" = "$OPENCLAW_AFTER_SECOND" ] \
   || fail "re-run changed openclaw.json (not idempotent)"
 
-# KNOWN-BUG: init overwrites openclaw.json with generated integration config and does not
-# merge user-defined keys (customKey) into the live file. User keys survive only in the backup.
-# See RELEASE-CHECKLIST.md v1.0 blockers.
 LIVE_CONTENT=$(cat "$OPENCLAW_JSON")
-if echo "$LIVE_CONTENT" | grep -qF '"customKey":"preserved-value"'; then
-  pass "init: backup written, openclaw.json backed up, config preserved, re-run idempotent, user keys preserved"
-else
-  echo "  KNOWN-BUG [$SCENARIO]: init does not merge user keys into live openclaw.json — see RELEASE-CHECKLIST.md"
-  pass "init: backup written, openclaw.json backed up, config preserved, re-run idempotent (user-key merge pending)"
-fi
+echo "$LIVE_CONTENT" | grep -qF '"customKey":"preserved-value"' \
+  || fail "init did not preserve customKey in live openclaw.json (CS-27: merge user keys into live file)"
+
+pass "init: backup written, openclaw.json backed up, config preserved, re-run idempotent, user keys preserved"

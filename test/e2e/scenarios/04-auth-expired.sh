@@ -7,6 +7,8 @@ SCENARIO="04-auth-expired"
 
 export STUB_CLAUDE_MODE=auth_expired
 export STUB_CODEX_MODE=ok
+export STUB_INVOCATION_LOG="$CLAWSUB_HOME/stub-invocations.log"
+mkdir -p "$CLAWSUB_HOME"
 
 OUT=$("$CLAWSUB" run "hello world" 2>&1)
 
@@ -33,4 +35,8 @@ STATE2=$(node -e "const d=JSON.parse(require('fs').readFileSync('$STATE','utf8')
 [ "$STATE2" = "auth_expired" ] \
   || fail "claude should still be auth_expired on second run, got: $STATE2"
 
-pass "auth_expired: status set, login hint shown, codex used, claude not retried"
+CLAUDE_COUNT=$(grep -c "^claude " "$STUB_INVOCATION_LOG" 2>/dev/null || echo 0)
+[ "$CLAUDE_COUNT" -eq 1 ] \
+  || fail "claude was invoked $CLAUDE_COUNT times across both runs (expected exactly 1)"
+
+pass "auth_expired: status set, login hint shown, codex used, claude invoked exactly once"

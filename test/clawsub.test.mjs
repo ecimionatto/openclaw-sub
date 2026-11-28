@@ -1336,6 +1336,20 @@ test("fixture-driven: each cli-error fixture classifies and parses correctly", (
   }
 });
 
+test("isQuotaError and parseResetTime handle real production 5-hour limit strings", () => {
+  const realDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/cli-errors/real");
+  const files = fs.readdirSync(realDir).filter(f => f.endsWith(".txt"));
+  assert.ok(files.length > 0, "real fixture directory must not be empty");
+  const now = new Date(2026, 10, 25, 10, 0); // Nov 25 2026 10:00 AM
+  for (const file of files) {
+    const text = fs.readFileSync(path.join(realDir, file), "utf8").trim();
+    assert.equal(isQuotaError(text), true, `${file}: real production string must be classified as quota error`);
+    const result = parseResetTime(text, now);
+    assert.ok(result, `${file}: parseResetTime must return a date for real production string`);
+    assert.ok(result > now, `${file}: parsed reset time must be in the future`);
+  }
+});
+
 test("parseResetTime: Codex cross-midnight 'Try again at 1:00 AM' at 23:00 rolls to next day", () => {
   const now = new Date(2026, 10, 25, 23, 0); // Nov 25 2026 11pm
   const result = parseResetTime("Try again at 1:00 AM", now);

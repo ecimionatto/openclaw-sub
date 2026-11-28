@@ -3,6 +3,7 @@
 case "$1" in
   --version) echo "1.0.0-stub"; exit 0 ;;
   *)
+    [ -n "${STUB_INVOCATION_LOG:-}" ] && printf "claude %s\n" "$*" >> "$STUB_INVOCATION_LOG"
     case "${STUB_CLAUDE_MODE:-limit}" in
       ok)           echo "stub-claude-response: ok"; exit 0 ;;
       auth_expired) echo "You are not logged in to Claude. Run 'claude auth login' to authenticate." >&2; exit 1 ;;

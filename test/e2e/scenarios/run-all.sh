@@ -27,22 +27,34 @@ export STUBS_DIR
 
 PASS=0
 FAIL=0
+BLOCKED=0
 
 for SCRIPT in "$SCENARIOS_DIR"/[0-9][0-9]-*.sh; do
   [ -f "$SCRIPT" ] || continue
+  BLOCKER=$(grep -oE 'KNOWN_BLOCKER=[A-Z]+-[0-9]+' "$SCRIPT" | head -1 | cut -d= -f2 || true)
   SCENARIO_WORK=$(mktemp -d)
   export CLAWSUB_HOME="$SCENARIO_WORK/clawsub_home"
   export HOME="$SCENARIO_WORK/home"
   mkdir -p "$HOME"
   unset STUB_CLAUDE_MODE STUB_CODEX_MODE STUB_AGY_MODE 2>/dev/null || true
   if bash "$SCRIPT"; then
-    PASS=$(( PASS + 1 ))
+    if [ -n "$BLOCKER" ]; then
+      echo "  UNEXPECTED PASS [$(basename "$SCRIPT")]: marked KNOWN_BLOCKER=$BLOCKER but passed — remove the marker"
+      FAIL=$(( FAIL + 1 ))
+    else
+      PASS=$(( PASS + 1 ))
+    fi
   else
-    FAIL=$(( FAIL + 1 ))
+    if [ -n "$BLOCKER" ]; then
+      echo "  BLOCKED ($BLOCKER): $(basename "$SCRIPT")"
+      BLOCKED=$(( BLOCKED + 1 ))
+    else
+      FAIL=$(( FAIL + 1 ))
+    fi
   fi
   rm -rf "$SCENARIO_WORK"
 done
 
 echo ""
-echo "==> Scenario results: $PASS passed, $FAIL failed"
+echo "==> Scenario results: $PASS passed, $FAIL failed, $BLOCKED blocked"
 [ "$FAIL" -eq 0 ] || exit 1
