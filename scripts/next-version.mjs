@@ -91,16 +91,18 @@ if (process.argv[1] && process.argv[1].endsWith('next-version.mjs')) {
   try {
     const log = execSync(`git log --format=%B%x00 ${range}`, { encoding: 'utf8' });
     subjects = log.split('\0').map(s => s.trim()).filter(Boolean);
-  } catch {
-    subjects = [];
+  } catch (err) {
+    process.stderr.write(`git log failed: ${err.message}\n`);
+    process.exit(1);
   }
 
   let hasV1 = false;
   try {
     const tags = execSync('git tag --list', { encoding: 'utf8' });
     hasV1 = tags.split('\n').some(t => /^v?[1-9]/.test(t.trim()));
-  } catch {
-    hasV1 = false;
+  } catch (err) {
+    process.stderr.write(`git tag --list failed: ${err.message}\n`);
+    process.exit(1);
   }
 
   const ver = nextVersion(current, subjects, hasV1);

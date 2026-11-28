@@ -35,6 +35,20 @@ Releases are **fully automated**. Every green push to `main` triggers the CD pip
 
 ## Edge cases
 
+### Superseded releases (older merge not released)
+
+When two merges land close together, the release job is serialized via a `concurrency` group so only one runs at a time. The guard step skips any run where `origin/main` has already advanced past the merge's SHA **and** no release tag has been pushed for that SHA yet.
+
+This means: if the second merge's gates fail (e.g. flaky tests) or its commit message contains `[skip ci]`, the first (now-older) merge's release run is skipped and that commit never ships independently. The first commit's changes will be bundled into the next successful release instead.
+
+To release the older commit explicitly in this situation, tag it manually and push:
+
+```bash
+git tag vX.Y.Z <older-sha> && git push origin vX.Y.Z
+gh release create vX.Y.Z --generate-notes
+npm publish --tag next --access public  # requires NPM_TOKEN set locally
+```
+
 ### Skip the release on a hot-fix merge
 Add `[skip ci]` to the commit message. The CD pipeline will not run.
 
