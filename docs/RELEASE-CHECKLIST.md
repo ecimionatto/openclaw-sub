@@ -44,9 +44,12 @@ This means: if the second merge's gates fail (e.g. flaky tests) or its commit me
 To release the older commit explicitly in this situation, tag it manually and push:
 
 ```bash
+git checkout <older-sha>
+npm version X.Y.Z --no-git-tag-version
 git tag vX.Y.Z <older-sha> && git push origin vX.Y.Z
 gh release create vX.Y.Z --generate-notes
 npm publish --tag next --access public  # requires NPM_TOKEN set locally
+git checkout main
 ```
 
 ### Skip the release on a hot-fix merge

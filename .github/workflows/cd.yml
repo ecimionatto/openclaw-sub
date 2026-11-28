@@ -203,7 +203,15 @@ jobs:
             echo "::notice::NPM_TOKEN secret not set — skipping dist-tag promotion"
           else
             VERSION="${{ needs.release.outputs.version }}"
-            CURRENT_LATEST=$(npm view openclaw-sub dist-tags.latest 2>/dev/null || echo "0.0.0")
+            NPM_VIEW_OUT=$(npm view openclaw-sub dist-tags.latest 2>&1); NPM_VIEW_EXIT=$?
+            if [ $NPM_VIEW_EXIT -eq 0 ]; then
+              CURRENT_LATEST="$NPM_VIEW_OUT"
+            elif echo "$NPM_VIEW_OUT" | grep -qE 'E404|not in the npm registry'; then
+              CURRENT_LATEST="0.0.0"
+            else
+              echo "::error::npm registry lookup failed: $NPM_VIEW_OUT"
+              exit 1
+            fi
             # Skip if latest is already >= VERSION to prevent rolling back a newer release.
             SHOULD_PROMOTE=$(node -e "
               const v = s => s.replace(/^v/,'').split('.').map(Number);
